@@ -32,21 +32,19 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20200509 - first function for calibrate wind sensor
+20200424 - add support for external 1-wire temperature ensor (DS18B20)
 
 ToDo
-- calibration wind speed sensor
+- add frenetic mode
+- precise calibration wind speed sensor
 - telnet inactivity watchdog > close
-- APRS https://github.com/cstroie/WxUno/blob/master/WxUno.ino?
 - SD card log
 - clear code
 
-EXAMPLE
-APRS-TX | user OK1HRA-6 pass 24480 vers esp32wx 20200326 filter m/1
-APRS-TX | OK1HRA-6>APRSWX,TCPIP*,qAS,:=5005.23N/01343.35E_180/000g000t081h042b097973
-APRS-TX | OK1HRA-6>APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station
-89.235.48.27    http://czech.aprs2.net
 */
 //-------------------------------------------------------------------------------------------------------
+#define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
 #define HTU21D                      // humidity I2C sensor
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
@@ -58,12 +56,11 @@ const int keyNumber = 1;
 char key[100];
 
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20200403";
-String YOUR_CALL = "";
-
-long MeasureTimer[2]={2800000,1800000};   //  1/2 hour
+const char* REV = "20200509";
 
 // values
+String YOUR_CALL = "";
+long MeasureTimer[2]={2800000,1800000};   //  1/2 hour
 long RainTimer[2]={0,5000};   //  <---------------- rain timing
 int RainCount;
 String RainCountDayOfMonth;
@@ -79,6 +76,13 @@ long MinRpmPulse;
 String MinRpmPulseTimestamp;
 unsigned int RpmSpeed = 0;
 unsigned long RpmAverage[2]={1,0};
+
+int SpeedAlertLimit_ms = 0;
+int SpeedAlert_ms = 3000;
+// bool NeedSpeedAlert_ms = false;
+long AlertTimer[2]={0,60000};
+//  |alert...........|alert........... everry max 1 minutes and with publish max value in period
+
 
 byte InputByte[21];
 // #define Ser2net                  // Serial to ip proxy - DISABLE if board revision 0.3 or lower
@@ -105,7 +109,7 @@ int i = 0;
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "EEPROM.h"
-#define EEPROM_SIZE 232   /*
+#define EEPROM_SIZE 233   /*
 0    -listen source
 1    -net ID
 2    -encoder range
@@ -134,6 +138,7 @@ int i = 0;
 208-212 - APRS password
 213-230 - APRS coordinate
 231 - PressureOfset offset
+232 - SpeedAlert
 */
 int PressureOfset = 0;
 bool needEEPROMcommit = false;
@@ -223,11 +228,13 @@ byte ShiftOutByte[3];
   Adafruit_BMP280 bmp(&I2Cone); // use I2C interface
   Adafruit_Sensor *bmp_temp = bmp.getTemperatureSensor();
   Adafruit_Sensor *bmp_pressure = bmp.getPressureSensor();
+  bool BMP280enable;
 #endif
 
 #if defined(HTU21D)
   #include "Adafruit_HTU21DF.h"
   Adafruit_HTU21DF htu = Adafruit_HTU21DF();
+  bool HTU21Denable;
 #endif
 
 const int RpmPin = 39;
@@ -292,9 +299,25 @@ IPAddress aprs_server_ip(0, 0, 0, 0);
 String AprsPassword;
 String AprsCoordinates;
 
+// DS18B20
+#if defined(DS18B20)
+  #include <OneWire.h>
+  #include <DallasTemperature.h>
+  // const int DsPin = 3;
+  // OneWire ds(DsPin);
+  // DallasTemperature sensors(&ds);
+  const int oneWireBus = 3;
+  OneWire oneWire(oneWireBus);
+  DallasTemperature sensors(&oneWire);
+#endif
+
 //-------------------------------------------------------------------------------------------------------
 
 void setup() {
+  #if defined(DS18B20)
+    sensors.begin();
+  #endif
+
   Serial.begin(SERIAL_BAUDRATE);
   while(!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
@@ -302,24 +325,30 @@ void setup() {
 
   #if defined(BMP280)
     I2Cone.begin(I2C_SDA, I2C_SCL, 100000); // SDA pin 21, SCL pin 22, 100kHz frequency
-    if (!bmp.begin(0x76)) {
+    if(!bmp.begin(0x76)){
       Serial.println(F(" *** Could not find a valid BMP280 sensor!"));
       // while (1) delay(10);
+      BMP280enable=false;
+    }else{
+      BMP280enable=true;
+      /* Default settings from datasheet. */
+      bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
+        Adafruit_BMP280::SAMPLING_X2,     /* Temp. oversampling */
+        Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
+        Adafruit_BMP280::FILTER_X16,      /* Filtering. */
+        Adafruit_BMP280::STANDBY_MS_500); /* Standby time. */
+        bmp_temp->printSensorDetails();
     }
-    /* Default settings from datasheet. */
-    bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
-                    Adafruit_BMP280::SAMPLING_X2,     /* Temp. oversampling */
-                    Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
-                    Adafruit_BMP280::FILTER_X16,      /* Filtering. */
-                    Adafruit_BMP280::STANDBY_MS_500); /* Standby time. */
-    bmp_temp->printSensorDetails();
   #endif
 
   #if defined(HTU21D)
     Wire.begin(I2C_SDA, I2C_SCL);
-    if (!htu.begin()) {
+    if(!htu.begin()){
       Serial.println(F(" *** Could not find a valid HTU21D sensor!"));
       // while (1);
+      HTU21Denable=false;
+    }else{
+      HTU21Denable=true;
     }
   #endif
 
@@ -352,12 +381,12 @@ void setup() {
     }
   }
   // 0-listen source
-  TxUdpBuffer[2] = EEPROM.read(0);
-  if(TxUdpBuffer[2]=='o'||TxUdpBuffer[2]=='r'||TxUdpBuffer[2]=='m'||TxUdpBuffer[2]=='e'){
-    // OK
-  }else{
+  // TxUdpBuffer[2] = EEPROM.read(0);
+  // if(TxUdpBuffer[2]=='o'||TxUdpBuffer[2]=='r'||TxUdpBuffer[2]=='m'||TxUdpBuffer[2]=='e'){
+  //   // OK
+  // }else{
     TxUdpBuffer[2]='n';
-  }
+  // }
 
   // 1-net ID
       NET_ID = EEPROM.read(1);
@@ -481,6 +510,11 @@ void setup() {
   // 231 PressureOfset
   if(EEPROM.readByte(231)!=255){
     PressureOfset = EEPROM.read(231);
+  }
+
+  // 232 PressureOfset
+  if(EEPROM.readByte(232)!=255){
+    SpeedAlertLimit_ms = EEPROM.read(232);
   }
 
   // if(EnableSerialDebug==1){
@@ -669,6 +703,8 @@ void Interrupts(boolean ON){
 }
 
 //-------------------------------------------------------------------------------------------------------
+// ToDo
+// https://techtutorialsx.com/2017/10/07/esp32-arduino-timer-interrupts/
 void RPMcount(){
   Interrupts(false);
   if(digitalRead(RpmPin)==0){   // because FALLING not work
@@ -688,6 +724,14 @@ void RPMcount(){
       needEEPROMcommit = true;
     }
 
+    // if(RpmPulse<SpeedAlertLimit_ms){
+    //   if(RpmPulse<SpeedAlert_ms){
+    //     SpeedAlert_ms=RpmPulse;
+    //     AlertTimer[0]=millis();
+    //   }
+    // }
+
+
     if(RpmPulse<RpmTimer[1]){
       RpmAverage[1]=RpmAverage[1]+RpmPulse;
       RpmAverage[0]++;
@@ -697,17 +741,41 @@ void RPMcount(){
   Interrupts(true);
 }
 //-------------------------------------------------------------------------------------------------------
-int PulseToMetterBySecond(long PULSE){
-  if(PULSE>3000 || PULSE==0){
+int MpsToMs(int MPS){
+  if(MPS>0){
+    int ms;
+    // ms = 1000*CupRotationCircleCircumferenceInMeters*Kfactor/MPS; // 0,21195 = cup rotaion circle circumference in meters (for 135 mm diameter), 1,3 = K factor
+    ms = pow(MPS/500, 1/-0.784);
+    return ms;
+  }else{
+    return 0;
+    // for (int i = 0; i < MappingRow; i++) {
+    //   if(mapping[i][0] >= PULSE && PULSE >= mapping[i+1][0]){   // find range
+    //     return map(PULSE, mapping[i][0], mapping[i+1][0], mapping[i][1], mapping[i+1][1]);  // map(value, fromLow, fromHigh, toLow, toHigh) //*10 one decimal
+    //     break;
+    //   }
+    // }
+    // return 0;
+  }
+}
+//-------------------------------------------------------------------------------------------------------
+float PulseToMetterBySecond(long PULSE){
+  // < 0,28 m/s
+  if(PULSE>2000 || PULSE==0){
     return 0;
   }else{
-    for (int i = 0; i < MappingRow; i++) {
-      if(mapping[i][0] >= PULSE && PULSE >= mapping[i+1][0]){   // find range
-        return map(PULSE, mapping[i][0], mapping[i+1][0], mapping[i][1], mapping[i+1][1]);  // map(value, fromLow, fromHigh, toLow, toHigh) //*10 one decimal
-        break;
-      }
-    }
-    return 0;
+    float mps;
+    // ms = 1000/PULSE*CupRotationCircleCircumferenceInMeters*Kfactor; // 0,21195 = cup rotaion circle circumference in meters (for 135 mm diameter), 1,3 = K factor
+    mps = 500*pow(PULSE, -0.784);  // https://mycurvefit.com
+    return mps;
+
+    // for (int i = 0; i < MappingRow; i++) {
+    //   if(mapping[i][0] >= PULSE && PULSE >= mapping[i+1][0]){   // find range
+    //     return map(PULSE, mapping[i][0], mapping[i+1][0], mapping[i][1], mapping[i+1][1]);  // map(value, fromLow, fromHigh, toLow, toHigh) //*10 one decimal
+    //     break;
+    //   }
+    // }
+    // return 0;
   }
 }
 //-------------------------------------------------------------------------------------------------------
@@ -732,26 +800,50 @@ byte Azimuth(){    // run from interrupt
     case 0b01111111:
       WindDir=0;
       break;
+    case 0b01111110:
+      WindDir=22;
+      break;
     case 0b11111110:
       WindDir=45;
+      break;
+    case 0b11111100:
+      WindDir=67;
       break;
     case 0b11111101:
       WindDir=90;
       break;
+    case 0b11111001:
+      WindDir=112;
+      break;
     case 0b11111011:
       WindDir=135;
+      break;
+    case 0b11110011:
+      WindDir=157;
       break;
     case 0b11110111:
       WindDir=180;
       break;
+    case 0b11100111:
+      WindDir=202;
+      break;
     case 0b11101111:
       WindDir=225;
+      break;
+    case 0b11001111:
+      WindDir=247;
       break;
     case 0b11011111:
       WindDir=270;
       break;
+    case 0b10011111:
+      WindDir=292;
+      break;
     case 0b10111111:
       WindDir=315;
+      break;
+    case 0b00111111:
+      WindDir=337;
       break;
     default:
       WindDir=1;
@@ -761,8 +853,12 @@ byte Azimuth(){    // run from interrupt
 }
 
 //-------------------------------------------------------------------------------------------------------
+// todo
+// if(BMP280enable==true){
+// if(HTU21Denable==true){
 
 void AprsWxIgate() {
+  #if defined(BMP280) && defined(HTU21D)
   if(AprsON==true){
     if (!AprsClient.connect(aprs_server_ip, AprsPort)) {
       if(EnableSerialDebug==1){
@@ -789,12 +885,20 @@ void AprsWxIgate() {
       +"h"+LeadingZero(3,htu.readHumidity())
       +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset) );
     }
+    #if defined(DS18B20)
+      sensors.requestTemperatures();
+      float temperatureF = sensors.getTempFByIndex(0);
+    #endif
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAS,:="
     +AprsCoordinates+"_"
     +LeadingZero(3,WindDir)
     +"/"+LeadingZero(3,PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))
     +"g"+LeadingZero(3,PulseToMetterBySecond(PeriodMinRpmPulse))
-    +"t"+LeadingZero(3,htu.readTemperature()*1.8+32)
+    #if defined(DS18B20)
+      +"t"+LeadingZero(3,temperatureF)
+    #else
+      +"t"+LeadingZero(3,htu.readTemperature()*1.8+32)
+    #endif
     +"h"+LeadingZero(3,htu.readHumidity())
     +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset) );
 
@@ -803,6 +907,7 @@ void AprsWxIgate() {
     }
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
   }
+  #endif
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -880,6 +985,13 @@ byte LowByte(int ID){
 //-------------------------------------------------------------------------------------------------------
 void Watchdog(){
 
+  // if(NeedSpeedAlert_ms==true){
+  //   NeedSpeedAlert_ms=false;
+  //   MqttPubString("SpeedAlert-mps", String(PulseToMetterBySecond(RpmPulse)), false);
+  //   Azimuth();
+  //   MqttPubString("SpeedAlert-az", String(WindDir), false);
+  // }
+
   if(RebootWatchdog > 0 && millis()-WatchdogTimer > RebootWatchdog*60000){
     Serial.println();
     Serial.println("** Activate reboot watchdog - IP switch will be restarted **");
@@ -951,27 +1063,45 @@ void Watchdog(){
       RainCountDayOfMonth=UtcTime(2);
     }
     String StringUtc1 = UtcTime(1);
+    MqttPubString("utc", StringUtc1, false);
     Azimuth();
-    MqttPubString("WindDir_°", String(WindDir)+"|"+StringUtc1, false);
+    MqttPubString("WindDir-azimuth", String(WindDir), false);
 
     // MqttPubString("WindSpeedLast", String(RpmPulse)+" "+StringUtc1, false);
-    MqttPubString("WindSpeedAvg_ms", String(RpmAverage[1]/RpmAverage[0])+"|"+StringUtc1, false);
+    MqttPubString("WindSpeedAvg-mps", String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])), false);
     if(PeriodMinRpmPulse<987654321){
-      MqttPubString("WindSpeedMaxPeriod_ms", String(PeriodMinRpmPulse)+"|"+String(PeriodMinRpmPulseTimestamp), RetainMsg);
+      MqttPubString("WindSpeedMaxPeriod-mps", String(PulseToMetterBySecond(PeriodMinRpmPulse)), RetainMsg);
+      MqttPubString("WindSpeedMaxPeriod-utc", String(PeriodMinRpmPulseTimestamp), RetainMsg);
     }
-    MqttPubString("WindSpeedMax_ms", String(MinRpmPulse)+"|"+String(MinRpmPulseTimestamp), RetainMsg);
+    MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), RetainMsg);
+    MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), RetainMsg);
     RpmAverage[0]=1;
     RpmAverage[1]=0;
     PeriodMinRpmPulse=987654321;
     PeriodMinRpmPulseTimestamp="";
 
     #if defined(BMP280)
-      MqttPubString("Pressure_hPa", String(bmp.readPressure()/100+PressureOfset)+"|"+StringUtc1, false);
-      MqttPubString("Temperature-bak_°C", String(bmp.readTemperature())+"|"+StringUtc1, false);
+      if(BMP280enable==true){
+        MqttPubString("Pressure-hPa", String(bmp.readPressure()/100+PressureOfset), false);
+        MqttPubString("TemperatureBak-Celsius", String(bmp.readTemperature()), false);
+      }else{
+        MqttPubString("Pressure-hPa", "n/a", false);
+        MqttPubString("TemperatureBak-Celsius", "n/a", false);
+      }
     #endif
     #if defined(HTU21D)
-      MqttPubString("HumidityRel_%", String(htu.readHumidity())+"|"+StringUtc1, false);
-      MqttPubString("Temperature_°C", String(htu.readTemperature())+"|"+StringUtc1, false);
+      if(HTU21Denable==true){
+        MqttPubString("HumidityRel-Percent", String(htu.readHumidity()), false);
+        MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
+      }else{
+        MqttPubString("HumidityRel-Percent", "n/a", false);
+        MqttPubString("Temperature-Celsius", "n/a", false);
+      }
+    #endif
+    #if defined(DS18B20)
+      sensors.requestTemperatures();
+      float temperatureC = sensors.getTempCByIndex(0);
+      MqttPubString("TemperatureExternal-Celsius", String(temperatureC), false);
     #endif
 
     AprsWxIgate();
@@ -986,7 +1116,9 @@ void Watchdog(){
     Interrupts(false);
     needEEPROMcommit = false;
     EEPROM.commit();
-    MqttPubString("WindSpeedMax", String(MinRpmPulse)+" "+String(MinRpmPulseTimestamp), RetainMsg);
+    MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), true);
+    MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
+
     Interrupts(true);
   }
 
@@ -1420,7 +1552,7 @@ void CLI(){
     // .
     }else if(incomingByte==46){
       Prn(OUT, 1,"Reset timer and sent measure");
-      MeasureTimer[0]=2800000;
+      MeasureTimer[0]=millis()-MeasureTimer[1];
 
     // (
     // }else if(incomingByte==40){
@@ -1628,6 +1760,25 @@ void CLI(){
       }
       EEPROM.commit();
 
+  #if defined(DS18B20)
+    // // s
+    // }else if(incomingByte==115){
+    //   Prn(OUT, 1,"  Input WX coordinates and press [enter] in format.");
+    // byte i;
+    // byte addr[8];
+    // if (!ds.search(addr)) {
+    //   Prn(OUT, 1,"  No more addresses.");
+    //   ds.reset_search();
+    //   delay(250);
+    //   return;
+    // }
+    // Prn(OUT, 0,"  ROM= ");
+    // for (i = 0; i < 8; i++) {
+    //   Prn(OUT, 0," ");
+    //   Prn(OUT, 0, String(addr[i], HEX));
+    // }
+  #endif
+
   // O
 }else if(incomingByte==79){
     Prn(OUT, 1,"write pressure sensor ofset +-50 [enter]");
@@ -1646,6 +1797,29 @@ void CLI(){
     if(intBuf>=-50 && intBuf<=50){
       PressureOfset = intBuf;
       EEPROM.write(231, PressureOfset); // address, value
+      EEPROM.commit();
+    }else{
+      Prn(OUT, 1," Out of range");
+    }
+
+  // a
+}else if(incomingByte==97){
+    Prn(OUT, 1,"write limit for wind speed alert 0-60 m/s [enter]");
+    Enter();
+    int intBuf=0;
+    int mult=1;
+    for (int j=InputByte[0]; j>0; j--){
+      // detect -
+      if(j==1 && InputByte[j]==45){
+        intBuf = 0-intBuf;
+      }else{
+        intBuf = intBuf + ((InputByte[j]-48)*mult);
+        mult = mult*10;
+      }
+    }
+    if(intBuf>=0 && intBuf<=60){
+      SpeedAlertLimit_ms = MpsToMs(intBuf);
+      EEPROM.write(232, SpeedAlertLimit_ms); // address, value
       EEPROM.commit();
     }else{
       Prn(OUT, 1," Out of range");
@@ -1923,9 +2097,12 @@ void ListCommands(int OUT){
   }else if(millis() > 60000 && millis() < 3600000){
     Prn(OUT, 0, String(millis()/60000) );
     Prn(OUT, 1," minutes");
-  }else{
+  }else if(millis() > 3600000 && millis() < 86400000){
     Prn(OUT, 0, String(millis()/3600000) );
     Prn(OUT, 1," hours");
+  }else{
+    Prn(OUT, 0, String(millis()/86400000) );
+    Prn(OUT, 1," days");
   }
 
   if(RebootWatchdog > 0){
@@ -1993,17 +2170,42 @@ void ListCommands(int OUT){
   }else{
     Prn(OUT, 1, "  Wind direction "+String(WindDir)+"°");
   }
-  Prn(OUT, 1, "  Wind speed last "+String(RpmPulse)+"ms | "+String(PulseToMetterBySecond(RpmPulse))+"m/s");
+  Prn(OUT, 1, "  Wind speed last "+String(RpmPulse)+"ms | "+String(PulseToMetterBySecond(RpmPulse))+"m/s | "+String(PulseToMetterBySecond(RpmPulse)*0.2777)+" km/h");
   Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+"ms | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+"m/s");
   Prn(OUT, 1, "             MAX in period "+String(PeriodMinRpmPulse)+"ms | "+String(PulseToMetterBySecond(PeriodMinRpmPulse))+"m/s ("+String(PeriodMinRpmPulseTimestamp)+")");
   Prn(OUT, 1, "             lifetime MAX "+String(MinRpmPulse)+"ms | "+String(PulseToMetterBySecond(MinRpmPulse))+"m/s ("+String(MinRpmPulseTimestamp)+")");
   #if defined(HTU21D)
-    Prn(OUT, 1, "  Temperature "+String(htu.readTemperature())+"°C");
-    Prn(OUT, 1, "  Humidity relative "+String(htu.readHumidity())+"%");
+    if(HTU21Denable==true){
+      Prn(OUT, 1, "  Temperature "+String(htu.readTemperature())+"°C");
+      Prn(OUT, 1, "  Humidity relative "+String(htu.readHumidity())+"%");
+    }else{
+      Prn(OUT, 1, "  Temperature n/a");
+      Prn(OUT, 1, "  Humidity relative n/a");
+    }
   #endif
   #if defined(BMP280)
-  Prn(OUT, 1, "  Pressure "+String(bmp.readPressure()/100+PressureOfset)+" hPa");
-  Prn(OUT, 1, "  Temperature-bak "+String(bmp.readTemperature())+"°C");
+    if(BMP280enable==true){
+      Prn(OUT, 1, "  Pressure "+String(bmp.readPressure()/100+PressureOfset)+" hPa");
+      Prn(OUT, 1, "  Temperature-bak "+String(bmp.readTemperature())+"°C");
+    }else{
+      Prn(OUT, 1, "  Pressure n/a");
+      Prn(OUT, 1, "  Temperature-bak n/a");
+    }
+  #endif
+  #if defined(DS18B20)
+    if(OUT==0){
+      Serial.flush();
+      Serial.end();
+    }
+    sensors.requestTemperatures();
+    float temperatureC = sensors.getTempCByIndex(0);
+    if(OUT==0){
+      Serial.begin(SERIAL_BAUDRATE);
+      while(!Serial) {
+        ; // wait for serial port to connect. Needed for native USB port only
+      }
+    }
+    Prn(OUT, 1, "  Temperature-external "+String(temperatureC)+"°C");
   #endif
   // Prn(OUT, 1, "  Humidity "+String()+"%");
   // if(cardType!=CARD_NONE){
@@ -2039,6 +2241,8 @@ void ListCommands(int OUT){
   // Prn(OUT, 1,"- none");
   // Prn(OUT, 1,"");
   Prn(OUT, 1,"      ?  list status and commands");
+  Prn(OUT, 0,"      a  speed Alert [");
+  Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s]");
   Prn(OUT, 0,"      O  pressure ofset [");
   Prn(OUT, 1, String(PressureOfset)+" hPa]");
   if(TxUdpBuffer[2]!='n'){
@@ -2173,12 +2377,14 @@ void ListCommands(int OUT){
       Prn(OUT, 0,"         c  change APRS coordinate | ");
       Prn(OUT, 1,AprsCoordinates);
     }
-
+    #if defined(DS18B20)
+      // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
+    #endif
   if(TxUdpBuffer[2]!='n'){
     Prn(OUT, 1,"      &  send broadcast packet");
   }
   if(TelnetServerClients[0].connected()){
-    Prn(OUT, 0,"      q  disconnect and close telnet [logged from ");
+    Prn(OUT, 0,"      q  disconnect and close telnet [verified IP ");
     Prn(OUT, 0, String(TelnetServerClientAuth[0])+"."+String(TelnetServerClientAuth[1])+"."+String(TelnetServerClientAuth[2])+"."+String(TelnetServerClientAuth[3]) );
     Prn(OUT, 1,"]");
     Prn(OUT, 1,"      Q  logout with erase your IP from memory and close telnet");
@@ -2744,8 +2950,20 @@ void http(){
           webClient.println(F("                  <p class=\"status\" style=\"font-size: 150%;\">"));
           // STATUS
           webClient.print(F("Uptime: "));
-          webClient.print(millis()/1000);
-          webClient.print(F(" sec | version: "));
+          if(millis() < 60000){
+            webClient.print(millis()/1000);
+            webClient.print(F(" seconds"));
+          }else if(millis() > 60000 && millis() < 3600000){
+            webClient.print(millis()/60000);
+            webClient.print(F(" minutes"));
+          }else if(millis() > 3600000 && millis() < 86400000){
+            webClient.print(millis()/3600000);
+            webClient.print(F(" hours"));
+          }else{
+            webClient.print(millis()/86400000);
+            webClient.print(F(" days"));
+          }
+          webClient.print(F(" | version: "));
           webClient.println(REV);
           webClient.print(F(" | eth mac: "));
           for (int i = 0; i < 6; i++) {
@@ -2778,6 +2996,11 @@ void http(){
           webClient.print(F(" | Refresh time "));
           webClient.print(MeasureTimer[1]/60000);
           webClient.println(F(" min"));
+          if(AprsON==true){
+            webClient.print(F(" | <a href=\"https://aprs.fi/#!call="));
+            webClient.print(YOUR_CALL);
+            webClient.println(F("\" target=_blank>APRS</a>"));
+          }
           // END STATUS
           webClient.println(F("              </p>"));
           webClient.println(F("              </div>"));
@@ -2835,6 +3058,7 @@ void http(){
     webClient.stop();
    if(EnableSerialDebug==1){
      Serial.println("WIFI webClient disconnected");
+     MeasureTimer[0]=millis()+5000-MeasureTimer[1];
    }
    Interrupts(true);
   }
@@ -3034,7 +3258,8 @@ void AfterMQTTconnect(){
             // Serial.print(" ");
             // Serial.println(mqttTX);
 
-    MeasureTimer[0]=2800000;
+    // MeasureTimer[0]=2800000;
+    MeasureTimer[0]=millis()-MeasureTimer[1];
 
   #endif
 }
@@ -3612,7 +3837,7 @@ String UtcTime(int format){
       strcpy(buf, "n/a");
     }else{
       if(format==1){
-        strftime(buf, sizeof(buf), "%Y-%b-%d %H:%M:%S UTC", &timeinfo);
+        strftime(buf, sizeof(buf), "%Y-%b-%d %H:%M:%S", &timeinfo);
       }else if(format==2){
         strftime(buf, sizeof(buf), "%d", &timeinfo);
       }else if(format==3){
