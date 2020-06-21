@@ -2,7 +2,7 @@
 
 3D printed WX station
 ----------------------
-https://remoteqth.com
+https://remoteqth.com/w/doku.php?id=3d_print_wx_station
 TNX OK1IAK for code help
 
 ___               _        ___ _____ _  _
@@ -32,39 +32,38 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20200620 - addd frenetic mode, calibrate rain sensor
 20200509 - first function for calibrate wind sensor
 20200424 - add support for external 1-wire temperature ensor (DS18B20)
 
 ToDo
-- add frenetic mode
-- precise calibration wind speed sensor
 - telnet inactivity watchdog > close
 - SD card log
 - clear code
 
 */
 //-------------------------------------------------------------------------------------------------------
-#define DS18B20                     // external 1wire Temperature sensor
+// #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
 #define HTU21D                      // humidity I2C sensor
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
-// #define WIFI                          // Enable ESP32 WIFI (DHCP IPv4)
+// #define WIFI                          // Enable ESP32 WIFI (DHCP IPv4) - NOT TESTED
 const char* ssid     = "";
 const char* password = "";
 
-const int keyNumber = 1;
-char key[100];
-
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20200509";
+const char* REV = "20200620";
 
 // values
+const int keyNumber = 1;
+char key[100];
 String YOUR_CALL = "";
 long MeasureTimer[2]={2800000,1800000};   //  1/2 hour
 long RainTimer[2]={0,5000};   //  <---------------- rain timing
 int RainCount;
 String RainCountDayOfMonth;
 bool RainStatus;
+float mmInPulse = 0.154;        // rain mm in one rain pulse
 
 unsigned int WindDir = 0;
 
@@ -89,7 +88,8 @@ byte InputByte[21];
 #define EnableOTA                // Enable flashing ESP32 Over The Air
 int NumberOfEncoderOutputs = 8;  // 2-16
 byte NET_ID = 0x00;              // Unique ID number [0-F] hex format
-bool EnableSerialDebug     = 0;
+int EnableSerialDebug     = 0;
+long FreneticModeTimer ;
 #define HTTP_SERVER_PORT  80     // Web server port
 int IncomingSwitchUdpPort;
 #define ShiftOut                 // Enable ShiftOut register
@@ -171,7 +171,6 @@ String HTTP_req;
 
 #define MQTT               // Enable MQTT debug
 #if defined(MQTT)
-  bool RetainMsg = false;
   #include <PubSubClient.h>
   // #include "PubSubClient.h" // lokalni verze s upravou #define MQTT_MAX_PACKET_SIZE 128
   // WiFiClient esp32Client;
@@ -376,7 +375,7 @@ void setup() {
 
   // Listen source
   if (!EEPROM.begin(EEPROM_SIZE)){
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Serial.println("failed to initialise EEPROM"); delay(1);
     }
   }
@@ -517,7 +516,7 @@ void setup() {
     SpeedAlertLimit_ms = EEPROM.read(232);
   }
 
-  // if(EnableSerialDebug==1){
+  // if(EnableSerialDebug>0){
     Serial.println();
     Serial.print("Version: ");
     Serial.println(REV);
@@ -547,7 +546,7 @@ void setup() {
   // }
 
   #if defined(WIFI)
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Serial.print("WIFI Connecting to ");
       Serial.print(ssid);
     }
@@ -556,13 +555,13 @@ void setup() {
     while(WiFi.status() != WL_CONNECTED) {
       // Connect to WPA/WPA2 network. Change this line if using open or WEP network:
       delay(500);
-      if(EnableSerialDebug==1){
+      if(EnableSerialDebug>0){
         Serial.print(".");
       }
     }
     // LED1status = !LED1status;
     // digitalWrite(LED1, LED1status);           // signalize wifi connected
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Serial.println("");
       Serial.println("WIFI connected");
       Serial.print("WIFI IP address: ");
@@ -861,29 +860,30 @@ void AprsWxIgate() {
   #if defined(BMP280) && defined(HTU21D)
   if(AprsON==true){
     if (!AprsClient.connect(aprs_server_ip, AprsPort)) {
-      if(EnableSerialDebug==1){
+      if(EnableSerialDebug>0){
         Prn(3, 1,"APRS client connect failed!");
       }
       return;
     }
 
     // login
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Prn(3, 1,"APRS-TX | user "+YOUR_CALL+" pass "+AprsPassword+" vers esp32wx "+REV+" filter m/1");
     }
     AprsClient.println("user "+YOUR_CALL+" pass "+AprsPassword+" vers esp32wx "+REV+" filter m/1");
     delay (250);
 
     // send data
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Prn(3, 1,"APRS-TX | "+YOUR_CALL+">APRSWX,TCPIP*,qAS,:="
       +AprsCoordinates+"_"
       +LeadingZero(3,WindDir)
-      +"/"+LeadingZero(3,PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))
-      +"g"+LeadingZero(3,PulseToMetterBySecond(PeriodMinRpmPulse))
+      +"/"+LeadingZero(3,PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])/0.447)
+      +"g"+LeadingZero(3,PulseToMetterBySecond(PeriodMinRpmPulse)/0.447)
       +"t"+LeadingZero(3,htu.readTemperature()*1.8+32)
       +"h"+LeadingZero(3,htu.readHumidity())
-      +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset) );
+      +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset)
+      +"P"+LeadingZero(3,RainPulseToMM(RainCount)/0.254) );
     }
     #if defined(DS18B20)
       sensors.requestTemperatures();
@@ -892,17 +892,21 @@ void AprsWxIgate() {
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAS,:="
     +AprsCoordinates+"_"
     +LeadingZero(3,WindDir)
-    +"/"+LeadingZero(3,PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))
-    +"g"+LeadingZero(3,PulseToMetterBySecond(PeriodMinRpmPulse))
+    // Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+"ms | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+"m/s | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+" km/h");
+    // Prn(OUT, 1, "             MAX in period "+String(PeriodMinRpmPulse)+"ms | "+String(PulseToMetterBySecond(PeriodMinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h ("+String(PeriodMinRpmPulseTimestamp)+")");
+    // mps/0.447 = mph
+    +"/"+LeadingZero(3,PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])/0.447)
+    +"g"+LeadingZero(3,PulseToMetterBySecond(PeriodMinRpmPulse)/0.447)
     #if defined(DS18B20)
       +"t"+LeadingZero(3,temperatureF)
     #else
       +"t"+LeadingZero(3,htu.readTemperature()*1.8+32)
     #endif
     +"h"+LeadingZero(3,htu.readHumidity())
-    +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset) );
+    +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset)
+    +"P"+LeadingZero(3,RainPulseToMM(RainCount)/0.254) );
 
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Prn(3, 1,"APRS-TX | "+YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
     }
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
@@ -985,6 +989,16 @@ byte LowByte(int ID){
 //-------------------------------------------------------------------------------------------------------
 void Watchdog(){
 
+  // frenetic mode
+  if(EnableSerialDebug>1 && millis()-FreneticModeTimer > 1000){
+    Azimuth();
+    Prn(3, 1, "  Wind speed az/last/avg/max "+String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h");
+    if(eth_connected==true && mqttClient.connected()==true){
+      MqttPubString("WindSpeed_az/last/avg/max", String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h", false);
+    }
+    FreneticModeTimer=millis();
+  }
+
   // if(NeedSpeedAlert_ms==true){
   //   NeedSpeedAlert_ms=false;
   //   MqttPubString("SpeedAlert-mps", String(PulseToMetterBySecond(RpmPulse)), false);
@@ -1039,12 +1053,14 @@ void Watchdog(){
         RainCount++;
         RainStatus=false;
         MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+        MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
       }
     }else if(digitalRead(Rain1Pin)==1 && digitalRead(Rain2Pin)==0){
       if(RainStatus==false){
         RainCount++;
         RainStatus=true;
         MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+        MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
       }
     }
     RainTimer[0]=millis();
@@ -1070,15 +1086,11 @@ void Watchdog(){
     // MqttPubString("WindSpeedLast", String(RpmPulse)+" "+StringUtc1, false);
     MqttPubString("WindSpeedAvg-mps", String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])), false);
     if(PeriodMinRpmPulse<987654321){
-      MqttPubString("WindSpeedMaxPeriod-mps", String(PulseToMetterBySecond(PeriodMinRpmPulse)), RetainMsg);
-      MqttPubString("WindSpeedMaxPeriod-utc", String(PeriodMinRpmPulseTimestamp), RetainMsg);
+      MqttPubString("WindSpeedMaxPeriod-mps", String(PulseToMetterBySecond(PeriodMinRpmPulse)), false);
+      MqttPubString("WindSpeedMaxPeriod-utc", String(PeriodMinRpmPulseTimestamp), false);
     }
-    MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), RetainMsg);
-    MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), RetainMsg);
-    RpmAverage[0]=1;
-    RpmAverage[1]=0;
-    PeriodMinRpmPulse=987654321;
-    PeriodMinRpmPulseTimestamp="";
+    // MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), true);
+    // MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
 
     #if defined(BMP280)
       if(BMP280enable==true){
@@ -1105,6 +1117,11 @@ void Watchdog(){
     #endif
 
     AprsWxIgate();
+
+    RpmAverage[0]=1;
+    RpmAverage[1]=0;
+    PeriodMinRpmPulse=987654321;
+    PeriodMinRpmPulseTimestamp="";
 
     // writeFile(SD_MMC, "/hello.txt", "Hello ");
     // appendFile(SD_MMC, "/wx-"+String(UtcTime(3))+".txt", UtcTime(1) );
@@ -1164,7 +1181,7 @@ void CLI(){
     //   EEPROM.write(0, 'm'); // address, value
     //   EEPROM.commit();
     //   Prn(OUT, 1,"Now control from: IP switch master");
-    //   if(EnableSerialDebug==1){
+    //   if(EnableSerialDebug>0){
     //     Prn(OUT, 0,"EEPROM read [");
     //     Prn(OUT, 0, String(EEPROM.read(0)) );
     //     Prn(OUT, 1,"]");
@@ -1186,7 +1203,7 @@ void CLI(){
     //   EEPROM.write(0, 'r'); // address, value
     //   EEPROM.commit();
     //   Prn(OUT, 1,"Now control from: Band decoder");
-    //   if(EnableSerialDebug==1){
+    //   if(EnableSerialDebug>0){
     //     Prn(OUT, 0,"EEPROM read [");
     //     Prn(OUT, 0, String(EEPROM.read(0)) );
     //     Prn(OUT, 1,"]");
@@ -1208,7 +1225,7 @@ void CLI(){
     //   EEPROM.write(0, 'o'); // address, value
     //   EEPROM.commit();
     //   Prn(OUT, 1,"Now control from: Open Interface III");
-    //   if(EnableSerialDebug==1){
+    //   if(EnableSerialDebug>0){
     //     Prn(OUT, 0,"EEPROM read [");
     //     Prn(OUT, 0, String(EEPROM.read(0)) );
     //     Prn(OUT, 1,"]");
@@ -1343,7 +1360,7 @@ void CLI(){
         Prn(OUT, 0,"** Now Encoder range change to ");
         Prn(OUT, 0, String(NumberOfEncoderOutputs+1) );
         Prn(OUT, 1," **");
-        if(EnableSerialDebug==1){
+        if(EnableSerialDebug>0){
           Prn(OUT, 0,"EEPROM read [");
           Prn(OUT, 0, String(EEPROM.read(2)) );
           Prn(OUT, 1,"]");
@@ -1412,12 +1429,17 @@ void CLI(){
 
     // *
     }else if(incomingByte==42){
-      EnableSerialDebug=!EnableSerialDebug;
+      EnableSerialDebug++;
+      if(EnableSerialDebug>2){
+        EnableSerialDebug=0;
+      }
       Prn(OUT, 0,"** Serial DEBUG ");
-      if(EnableSerialDebug==true){
-        Prn(OUT, 1,"ENABLE **");
-      }else{
+      if(EnableSerialDebug==0){
         Prn(OUT, 1,"DISABLE **");
+      }else if(EnableSerialDebug==1){
+        Prn(OUT, 1,"ENABLE **");
+      }else if(EnableSerialDebug==2){
+        Prn(OUT, 1,"ENABLE with frenetic mode **");
       }
 
     // #
@@ -1480,7 +1502,7 @@ void CLI(){
             }
             Prn(OUT, 0, String(NET_ID, HEX) );
             Prn(OUT, 1," **");
-            if(EnableSerialDebug==1){
+            if(EnableSerialDebug>0){
               Prn(OUT, 0,"EEPROM read [");
               Prn(OUT, 0, String(EEPROM.read(1), HEX) );
               Prn(OUT, 1,"]");
@@ -1933,7 +1955,7 @@ void EnterChar(int OUT){
           incomingByte=TelnetServerClients[0].read();
         }
       }
-      if(EnableSerialDebug==1){
+      if(EnableSerialDebug>0){
         Serial.println();
         Serial.print("Telnet rx-");
         Serial.print(incomingByte, DEC);
@@ -2157,23 +2179,23 @@ void ListCommands(int OUT){
   if(digitalRead(Rain1Pin)==digitalRead(Rain2Pin)){
     Prn(OUT, 1,"! Rain sensor malformed" );
   }else{
-    Prn(OUT, 1,"  "+RainCountDayOfMonth+"th day Rain counter "+String(RainCount) );
+    Prn(OUT, 1,"  "+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+" | "+String(RainPulseToMM(RainCount))+"mm" );
   }
-  if(EnableSerialDebug==true){
-    Prn(3, 0,"  Azimuth ");
-    Prn(3, 1,String(Azimuth(),BIN));
-  }else{
-    Azimuth();
-  }
+  // if(EnableSerialDebug>0){
+  // }else{
+  // }
+  Azimuth();
+  Prn(3, 0,"  Azimuth ");
+  Prn(3, 1,String(Azimuth(),BIN));
   if(WindDir==1){
     Prn(OUT, 1,"! Wind direction sensor malformed" );
   }else{
     Prn(OUT, 1, "  Wind direction "+String(WindDir)+"°");
   }
-  Prn(OUT, 1, "  Wind speed last "+String(RpmPulse)+"ms | "+String(PulseToMetterBySecond(RpmPulse))+"m/s | "+String(PulseToMetterBySecond(RpmPulse)*0.2777)+" km/h");
-  Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+"ms | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+"m/s");
-  Prn(OUT, 1, "             MAX in period "+String(PeriodMinRpmPulse)+"ms | "+String(PulseToMetterBySecond(PeriodMinRpmPulse))+"m/s ("+String(PeriodMinRpmPulseTimestamp)+")");
-  Prn(OUT, 1, "             lifetime MAX "+String(MinRpmPulse)+"ms | "+String(PulseToMetterBySecond(MinRpmPulse))+"m/s ("+String(MinRpmPulseTimestamp)+")");
+  Prn(OUT, 1, "  Wind speed last "+String(RpmPulse)+"ms | "+String(PulseToMetterBySecond(RpmPulse))+"m/s | "+String(PulseToMetterBySecond(RpmPulse)*3.6)+" km/h");
+  Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+"ms | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+"m/s | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+" km/h");
+  Prn(OUT, 1, "             MAX in period "+String(PeriodMinRpmPulse)+"ms | "+String(PulseToMetterBySecond(PeriodMinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h ("+String(PeriodMinRpmPulseTimestamp)+")");
+  Prn(OUT, 1, "             lifetime MAX "+String(MinRpmPulse)+"ms | "+String(PulseToMetterBySecond(MinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(MinRpmPulse)*3.6)+" km/h ("+String(MinRpmPulseTimestamp)+")");
   #if defined(HTU21D)
     if(HTU21Denable==true){
       Prn(OUT, 1, "  Temperature "+String(htu.readTemperature())+"°C");
@@ -2242,7 +2264,7 @@ void ListCommands(int OUT){
   // Prn(OUT, 1,"");
   Prn(OUT, 1,"      ?  list status and commands");
   Prn(OUT, 0,"      a  speed Alert [");
-  Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s]");
+  Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s] - not implemented");
   Prn(OUT, 0,"      O  pressure ofset [");
   Prn(OUT, 1, String(PressureOfset)+" hPa]");
   if(TxUdpBuffer[2]!='n'){
@@ -2288,10 +2310,12 @@ void ListCommands(int OUT){
     }
   }
   Prn(OUT, 0,"      *  serial debug ");
-    if(EnableSerialDebug==true){
-      Prn(OUT, 1,"[ON]");
-    }else{
+    if(EnableSerialDebug==0){
       Prn(OUT, 1,"[OFF]");
+    }else if(EnableSerialDebug==1){
+      Prn(OUT, 1,"[ON]");
+    }else if(EnableSerialDebug==2){
+      Prn(OUT, 1,"[ON-frenetic]");
     }
   if(TxUdpBuffer[2]!='n'){
     Prn(OUT, 0,"      #  network ID prefix [");
@@ -2404,6 +2428,17 @@ void ListCommands(int OUT){
   Prn(OUT, 1, "" );
 }
 //-------------------------------------------------------------------------------------------------------
+float RainPulseToMM(int PULSE){
+  if(PULSE>20000 || PULSE==0){
+    return 0;
+  }else{
+    float mm;
+    mm = PULSE*mmInPulse;
+    return mm;
+  }
+}
+
+//-------------------------------------------------------------------------------------------------------
 char RandomChar(){
     int R = random(48, 122);
     if(R>=58 && 64>=R){
@@ -2466,7 +2501,7 @@ void RX_UDP(){
   if (UDPpacketSize){
     UdpCommand.read(packetBuffer, 10);      // read the packet into packetBufffer
     // Print RAW
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Serial.println();
       Serial.print("RXraw [");
       Serial.print(packetBuffer[0], HEX);
@@ -2511,7 +2546,7 @@ void RX_UDP(){
         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [2]=TmpAddr[2];
         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [3]=TmpAddr[3];
         DetectedRemoteSwPort [hexToDecBy4bit(IdPrefix(packetBuffer[0]))]=UdpCommand.remotePort();
-        if(EnableSerialDebug==1){
+        if(EnableSerialDebug>0){
           Serial.print("Detect controller ID ");
           Serial.print(IdPrefix(packetBuffer[0]), HEX);
           Serial.print(" on IP ");
@@ -2534,7 +2569,7 @@ void RX_UDP(){
       if((packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o')
         || (packetBuffer[4]== 'c' && packetBuffer[5]== 'f' && packetBuffer[6]== 'm')
         ){
-        if(EnableSerialDebug==1){
+        if(EnableSerialDebug>0){
           Serial.print("RX [");
           Serial.print(packetBuffer[0], HEX);
           for(int i=1; i<8; i++){
@@ -2569,12 +2604,12 @@ void RX_UDP(){
           // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[1]);
           // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[0]);
           // digitalWrite(ShiftOutLatchPin, HIGH);    // jakmile dáme latchPin na HIGH data se objeví na výstupu
-          if(EnableSerialDebug==1){
+          if(EnableSerialDebug>0){
             Serial.println("ShiftOut");
           }
         #endif
 
-        if(EnableSerialDebug==1){
+        if(EnableSerialDebug>0){
           // Serial.println();
           Serial.print(F("RX ["));
           Serial.print(packetBuffer[0], HEX);
@@ -2592,7 +2627,7 @@ void RX_UDP(){
           Serial.println(UdpCommand.remotePort());
         }
         if(UdpCommand.remotePort() != DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))] && EnableGroupPrefix==true){
-          // if(EnableSerialDebug==1){
+          // if(EnableSerialDebug>0){
             Serial.print(F("** Change ip-port ID "));
             Serial.print(IdPrefix(packetBuffer[0]), HEX);
             Serial.print(F(" (OLD-"));
@@ -2612,7 +2647,7 @@ void RX_UDP(){
       }
     } // filtered end
     else{
-      if(EnableSerialDebug==1){
+      if(EnableSerialDebug>0){
         Serial.println(F("   Different NET-ID, or bad packet format"));
       }
     }
@@ -2698,12 +2733,12 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
     // direct
     if(DIRECT==0){
       RemoteSwIP = ~ETH.subnetMask() | ETH.gatewayIP();
-      if(EnableSerialDebug==1){
+      if(EnableSerialDebug>0){
         Serial.print(F("TX broadcast ["));
       }
     }else{
       RemoteSwIP = UdpCommand.remoteIP();
-      if(EnableSerialDebug==1){
+      if(EnableSerialDebug>0){
         Serial.print(F("TX direct ["));
       }
     }
@@ -2714,7 +2749,7 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
       if(TxUdpBuffer[2] == 'm'){
         TxUdpBuffer[6] = NumberOfEncoderOutputs;
       }
-      if(EnableSerialDebug==1){
+      if(EnableSerialDebug>0){
         Serial.print(F("TX direct ["));
       }
       UdpCommand.beginPacket(UdpCommand.remoteIP(), UdpCommand.remotePort());
@@ -2722,7 +2757,7 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
   // DATA
   }else{
     RemoteSwIP = UdpCommand.remoteIP();
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Serial.print(F("TX ["));
     }
     UdpCommand.beginPacket(RemoteSwIP, UdpCommand.remotePort());
@@ -2732,7 +2767,7 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
   if(EnableGroupPrefix==false){
     UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
     UdpCommand.endPacket();
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Serial.print(TxUdpBuffer[0], HEX);
       Serial.print(char(TxUdpBuffer[1]));
       Serial.print(char(TxUdpBuffer[2]));
@@ -2762,7 +2797,7 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
     TxUdpBuffer[0]=packetBuffer[0];   // NET_ID by RX NET_ID
     UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
     UdpCommand.endPacket();
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Serial.print(TxUdpBuffer[0], HEX);
       for (int i=1; i<4; i++){
         Serial.print(char(TxUdpBuffer[i]));
@@ -2795,7 +2830,7 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
             UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
           UdpCommand.endPacket();
 
-          if(EnableSerialDebug==1){
+          if(EnableSerialDebug>0){
             Serial.print(F("TX direct ID-"));
             Serial.print(i, HEX);
             Serial.print(IdSufix(NET_ID), HEX);
@@ -2817,7 +2852,7 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
             Serial.println();
           }
         }else{
-          if(EnableSerialDebug==1){
+          if(EnableSerialDebug>0){
             Serial.print(F("noTX - RX prefix "));
             Serial.print(i, HEX);
             Serial.print(F(" "));
@@ -2830,7 +2865,7 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
     }
     // broadcast all prefix
     if(A=='b' && B=='r' && C=='o' && DIRECT==0 && TxUdpBuffer[2] == 'm'){
-      if(EnableSerialDebug==1){
+      if(EnableSerialDebug>0){
         Serial.print("TX all prefix ");
         Serial.print(RemoteSwIP);
         Serial.print(":");
@@ -2846,7 +2881,7 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
       Serial.print("*) ");
       for (int i=0; i<16; i++){
         TxUdpBuffer[0]=IdSufix(NET_ID) | (i<<4);
-        if(EnableSerialDebug==1){
+        if(EnableSerialDebug>0){
           Serial.print(TxUdpBuffer[0], HEX);
           Serial.print(" ");
         }
@@ -2854,7 +2889,7 @@ void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
         UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
         UdpCommand.endPacket();
       }
-      if(EnableSerialDebug==1){
+      if(EnableSerialDebug>0){
         Serial.println();
       }
     }   // end b r o
@@ -2868,7 +2903,7 @@ void http(){
   WiFiClient webClient = server.available();
   if (webClient) {
     Interrupts(false);
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Serial.println("WIFI New webClient");
     }
     memset(linebuf,0,sizeof(linebuf));
@@ -2879,7 +2914,7 @@ void http(){
       if (webClient.available()) {
         char c = webClient.read();
         HTTP_req += c;
-        // if(EnableSerialDebug==1){
+        // if(EnableSerialDebug>0){
         //   Serial.write(c);
         // }
         //read char by char HTTP request
@@ -3028,7 +3063,7 @@ void http(){
           webClient.println(F("      </body>"));
           webClient.println(F("  </html>"));
 
-          if(EnableSerialDebug==1){
+          if(EnableSerialDebug>0){
             Serial.print(HTTP_req);
           }
           HTTP_req = "";
@@ -3056,7 +3091,7 @@ void http(){
 
     // close the connection:
     webClient.stop();
-   if(EnableSerialDebug==1){
+   if(EnableSerialDebug>0){
      Serial.println("WIFI webClient disconnected");
      MeasureTimer[0]=millis()+5000-MeasureTimer[1];
    }
@@ -3178,7 +3213,7 @@ bool mqttReconnect() {
       const char *cstr = topic.c_str();
       if(mqttClient.subscribe(cstr)==true){
         Prn(3, 0, " > subscribe");
-        if(EnableSerialDebug==true){
+        if(EnableSerialDebug>0){
           Prn(3, 1, String(cstr));
         }
 
@@ -3218,7 +3253,7 @@ void MqttRx(char *topic, byte *payload, unsigned int length) {
   if ( CheckTopicBase.equals( String(topic) )){
     // memcpy(p,payload,length);
     MqttPubString("status", "MQTT_RX", false);
-    if(EnableSerialDebug==true){
+    if(EnableSerialDebug>0){
       Prn(3, 1, "MQTT_RX");
     }
     // Result=true;
@@ -3432,7 +3467,7 @@ void Telnet(){
           if(TelnetServerClients[i]) TelnetServerClients[i].stop();
           TelnetServerClients[i] = TelnetServer.available();
           if (!TelnetServerClients[i]) Serial.println("Telnet available broken");
-          if(EnableSerialDebug==1){
+          if(EnableSerialDebug>0){
             Serial.println();
             Serial.print("New Telnet client: ");
             Serial.print(i); Serial.print(' ');
@@ -3453,7 +3488,7 @@ void Telnet(){
         if(TelnetServerClients[i].available()){
           //get data from the telnet client and push it to the UART
           // while(TelnetServerClients[i].available()) Serial_one.write(TelnetServerClients[i].read());
-          if(EnableSerialDebug==1){
+          if(EnableSerialDebug>0){
             Serial.println();
             Serial.print("TelnetRX ");
           }
@@ -3461,7 +3496,7 @@ void Telnet(){
           while(TelnetServerClients[i].available()){
             incomingByte=TelnetServerClients[i].read();
             // Serial_one.write(RX);
-            if(EnableSerialDebug==1){
+            if(EnableSerialDebug>0){
               // Serial.write(RX);
               Serial.print(char(incomingByte));
             }
@@ -3486,7 +3521,7 @@ void Telnet(){
     //     if (TelnetServerClients[i] && TelnetServerClients[i].connected()){
     //       TelnetServerClients[i].write(sbuf, len);
     //       // delay(1);
-    //       if(EnableSerialDebug==1){
+    //       if(EnableSerialDebug>0){
     //         Serial.println();
     //         Serial.print("Telnet tx-");
     //         Serial.write(sbuf, len);
@@ -3496,7 +3531,7 @@ void Telnet(){
     // }
 
   }else{
-    // if(EnableSerialDebug==1){
+    // if(EnableSerialDebug>0){
     //   Serial.println("Telnet not connected!");
     // }
     for(i = 0; i < MAX_SRV_CLIENTS; i++) {
@@ -3521,7 +3556,7 @@ void SerialToIp(){
           if(SerialServerClients[i]) SerialServerClients[i].stop();
           SerialServerClients[i] = SerialServer.available();
           if (!SerialServerClients[i]) Serial.println("available broken");
-          if(EnableSerialDebug==1){
+          if(EnableSerialDebug>0){
             Serial.println();
             Serial.print("New Ser2net client: ");
             Serial.print(i); Serial.print(' ');
@@ -3541,7 +3576,7 @@ void SerialToIp(){
         if(SerialServerClients[i].available()){
           //get data from the telnet client and push it to the UART
           // while(SerialServerClients[i].available()) Serial_one.write(SerialServerClients[i].read());
-          if(EnableSerialDebug==1){
+          if(EnableSerialDebug>0){
             Serial.println();
             Serial.print("rx-");
           }
@@ -3590,7 +3625,7 @@ Vypinaci Paket
             byte RX;
             RX=SerialServerClients[i].read();
             Serial_one.write(RX);
-            if(EnableSerialDebug==1){
+            if(EnableSerialDebug>0){
               Serial.write(RX);
             }
           }
@@ -3612,7 +3647,7 @@ Vypinaci Paket
         if (SerialServerClients[i] && SerialServerClients[i].connected()){
           SerialServerClients[i].write(sbuf, len);
           // delay(1);
-          if(EnableSerialDebug==1){
+          if(EnableSerialDebug>0){
             Serial.println();
             Serial.print("tx-");
             Serial.write(sbuf, len);
@@ -3622,7 +3657,7 @@ Vypinaci Paket
     }
   }
   else {
-    if(EnableSerialDebug==1){
+    if(EnableSerialDebug>0){
       Serial.println("Ser2net not connected!");
     }
     for(i = 0; i < MAX_SRV_CLIENTS; i++) {
