@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20200815 - js url fix
 20200814 - add WatchdogTimer for reset
 20200620 - addd frenetic mode, calibrate rain sensor
 20200509 - first function for calibrate wind sensor
@@ -53,7 +54,7 @@ const char* ssid     = "";
 const char* password = "";
 
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20200814";
+const char* REV = "20200815";
 
 // values
 const int keyNumber = 1;
@@ -3090,8 +3091,8 @@ void http(){
           webClient.println(F("                  </p>"));
           webClient.println(F("              </div>"));
           webClient.println(F("          </div>"));
-          webClient.println(F("          <script type=\"text/javascript\" src=\"http://code.jquery.com/jquery-2.1.4.min.js\"></script>"));
-          webClient.println(F("          <script type=\"text/javascript\" src=\"http://code.jquery.com/color/jquery.color-2.1.2.min.js\"></script>"));
+          webClient.println(F("          <script type=\"text/javascript\" src=\"https://code.jquery.com/jquery-2.1.4.min.js\"></script>"));
+          webClient.println(F("          <script type=\"text/javascript\" src=\"https://code.jquery.com/color/jquery.color-2.1.2.min.js\"></script>"));
           webClient.println(F("          <script type=\"text/javascript\" src=\"https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js\"></script>"));
           webClient.println(F("          <script type=\"text/javascript\" src=\"https://remoteqth.com/mqtt-wall/wall.js\"></script>"));
           webClient.println(F("      </body>"));
