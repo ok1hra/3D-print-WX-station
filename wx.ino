@@ -32,12 +32,13 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20200814 - add WatchdogTimer for reset
 20200620 - addd frenetic mode, calibrate rain sensor
 20200509 - first function for calibrate wind sensor
 20200424 - add support for external 1-wire temperature ensor (DS18B20)
 
 ToDo
-- telnet inactivity watchdog > close
+- telnet inactivity to close
 - SD card log
 - clear code
 
@@ -52,7 +53,7 @@ const char* ssid     = "";
 const char* password = "";
 
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20200620";
+const char* REV = "20200814";
 
 // values
 const int keyNumber = 1;
@@ -82,6 +83,10 @@ int SpeedAlert_ms = 3000;
 long AlertTimer[2]={0,60000};
 //  |alert...........|alert........... everry max 1 minutes and with publish max value in period
 
+// 73 seconds WDT (WatchDogTimer)
+#include <esp_task_wdt.h>
+#define WDT_TIMEOUT 73
+long WdtTimer=0;
 
 byte InputByte[21];
 // #define Ser2net                  // Serial to ip proxy - DISABLE if board revision 0.3 or lower
@@ -663,6 +668,11 @@ void setup() {
     RainStatus=true;
   }
 
+  // WDT
+  esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
+  esp_task_wdt_add(NULL); //add current thread to WDT watch
+  WdtTimer=millis();
+
   //init and get the time
    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
    RainCountDayOfMonth=UtcTime(2);
@@ -989,6 +999,16 @@ byte LowByte(int ID){
 //-------------------------------------------------------------------------------------------------------
 void Watchdog(){
 
+  // WDT
+  if(millis()-WdtTimer > 60000){
+    esp_task_wdt_reset();
+    WdtTimer=millis();
+    if(EnableSerialDebug>0){
+      Prn(3, 0,"WDT reset ");
+      Prn(3, 1, UtcTime(1));
+    }
+  }
+
   // frenetic mode
   if(EnableSerialDebug>1 && millis()-FreneticModeTimer > 1000){
     Azimuth();
@@ -1050,17 +1070,31 @@ void Watchdog(){
   if(millis()-RainTimer[0]>RainTimer[1]){
     if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
       if(RainStatus==true){
-        RainCount++;
+        #if defined(HTU21D)
+          if(HTU21Denable==true){
+            // debouncing
+            if(htu.readHumidity()>90){
+              RainCount++;
+              MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+              MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
+            }
+          }
+        #endif
         RainStatus=false;
-        MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
-        MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
       }
     }else if(digitalRead(Rain1Pin)==1 && digitalRead(Rain2Pin)==0){
       if(RainStatus==false){
-        RainCount++;
+        #if defined(HTU21D)
+          if(HTU21Denable==true){
+            // debouncing
+            if(htu.readHumidity()>90){
+              RainCount++;
+              MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+              MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
+            }
+          }
+        #endif
         RainStatus=true;
-        MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
-        MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
       }
     }
     RainTimer[0]=millis();
