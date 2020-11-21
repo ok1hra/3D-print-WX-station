@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20201121 - external sensor enable from CLI
 20200815 - js url fix
 20200814 - add WatchdogTimer for reset
 20200620 - addd frenetic mode, calibrate rain sensor
@@ -39,22 +40,22 @@ Changelog:
 20200424 - add support for external 1-wire temperature ensor (DS18B20)
 
 ToDo
+- add DNS
 - telnet inactivity to close
 - SD card log
 - clear code
 
 */
 //-------------------------------------------------------------------------------------------------------
-// #define DS18B20                     // external 1wire Temperature sensor
+#define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
 #define HTU21D                      // humidity I2C sensor
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
-// #define WIFI                          // Enable ESP32 WIFI (DHCP IPv4) - NOT TESTED
+// #define WIFI                     // Enable ESP32 WIFI (DHCP IPv4) - NOT TESTED
 const char* ssid     = "";
 const char* password = "";
-
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20200815";
+const char* REV = "20201121";
 
 // values
 const int keyNumber = 1;
@@ -145,6 +146,7 @@ int i = 0;
 213-230 - APRS coordinate
 231 - PressureOfset offset
 232 - SpeedAlert
+233 - DS18B20 on/off
 */
 int PressureOfset = 0;
 bool needEEPROMcommit = false;
@@ -314,6 +316,7 @@ String AprsCoordinates;
   const int oneWireBus = 3;
   OneWire oneWire(oneWireBus);
   DallasTemperature sensors(&oneWire);
+  bool ExtTemp = false;
 #endif
 
 //-------------------------------------------------------------------------------------------------------
@@ -521,6 +524,12 @@ void setup() {
   if(EEPROM.readByte(232)!=255){
     SpeedAlertLimit_ms = EEPROM.read(232);
   }
+
+  // 233   - ExtTemp ON/OFF;
+  if(EEPROM.read(233)<2){
+    ExtTemp=EEPROM.read(233);
+  }
+
 
   // if(EnableSerialDebug>0){
     Serial.println();
@@ -896,10 +905,17 @@ void AprsWxIgate() {
       +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset)
       +"P"+LeadingZero(3,RainPulseToMM(RainCount)/0.254) );
     }
+    String StrBuf;
+    StrBuf=LeadingZero(3,htu.readTemperature()*1.8+32);
+
     #if defined(DS18B20)
-      sensors.requestTemperatures();
-      float temperatureF = sensors.getTempFByIndex(0);
+      if(ExtTemp==true){
+        sensors.requestTemperatures();
+        float temperatureF = sensors.getTempFByIndex(0);
+        StrBuf=LeadingZero(3,temperatureF);
+      }
     #endif
+
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAS,:="
     +AprsCoordinates+"_"
     +LeadingZero(3,WindDir)
@@ -908,11 +924,12 @@ void AprsWxIgate() {
     // mps/0.447 = mph
     +"/"+LeadingZero(3,PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])/0.447)
     +"g"+LeadingZero(3,PulseToMetterBySecond(PeriodMinRpmPulse)/0.447)
-    #if defined(DS18B20)
-      +"t"+LeadingZero(3,temperatureF)
-    #else
-      +"t"+LeadingZero(3,htu.readTemperature()*1.8+32)
-    #endif
+    // #if defined(DS18B20)
+    //   +"t"+LeadingZero(3,temperatureF)
+    // #else
+    //   +"t"+LeadingZero(3,htu.readTemperature()*1.8+32)
+    // #endif
+    +"t"+StrBuf
     +"h"+LeadingZero(3,htu.readHumidity())
     +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset)
     +"P"+LeadingZero(3,RainPulseToMM(RainCount)/0.254) );
@@ -1146,9 +1163,11 @@ void Watchdog(){
       }
     #endif
     #if defined(DS18B20)
-      sensors.requestTemperatures();
-      float temperatureC = sensors.getTempCByIndex(0);
-      MqttPubString("TemperatureExternal-Celsius", String(temperatureC), false);
+      if(ExtTemp==true){
+        sensors.requestTemperatures();
+        float temperatureC = sensors.getTempCByIndex(0);
+        MqttPubString("TemperatureExternal-Celsius", String(temperatureC), false);
+      }
     #endif
 
     AprsWxIgate();
@@ -1818,7 +1837,18 @@ void CLI(){
       EEPROM.commit();
 
   #if defined(DS18B20)
-    // // s
+  // s
+  }else if(incomingByte==115){
+    ExtTemp=!ExtTemp;
+      if(ExtTemp==true){
+        Prn(OUT, 1,"** External temp sensor ENABLE **");
+      }else{
+        Prn(OUT, 1,"** External temp sensor DISABLE **");
+      }
+        EEPROM.write(233, ExtTemp); // address, value
+        EEPROM.commit();
+
+    // s
     // }else if(incomingByte==115){
     //   Prn(OUT, 1,"  Input WX coordinates and press [enter] in format.");
     // byte i;
@@ -1888,10 +1918,10 @@ void CLI(){
 
     // anykey
     }else{
-      Prn(OUT, 0," [");
-      Prn(OUT, 0, String(incomingByte) ); //, DEC);
-      Prn(OUT, 1,"] unknown command");
-      ListCommands(OUT);
+      // Prn(OUT, 0," [");
+      // Prn(OUT, 0, String(incomingByte) ); //, DEC);
+      // Prn(OUT, 1,"] unknown command");
+      // ListCommands(OUT);
     }
     incomingByte=0;
   }
@@ -2250,19 +2280,21 @@ void ListCommands(int OUT){
     }
   #endif
   #if defined(DS18B20)
-    if(OUT==0){
-      Serial.flush();
-      Serial.end();
-    }
-    sensors.requestTemperatures();
-    float temperatureC = sensors.getTempCByIndex(0);
-    if(OUT==0){
-      Serial.begin(SERIAL_BAUDRATE);
-      while(!Serial) {
-        ; // wait for serial port to connect. Needed for native USB port only
+    if(ExtTemp==true){
+      if(OUT==0){
+        Serial.flush();
+        Serial.end();
       }
+      sensors.requestTemperatures();
+      float temperatureC = sensors.getTempCByIndex(0);
+      if(OUT==0){
+        Serial.begin(SERIAL_BAUDRATE);
+        while(!Serial) {
+          ; // wait for serial port to connect. Needed for native USB port only
+        }
+      }
+      Prn(OUT, 1, "  Temperature-external "+String(temperatureC)+"°C");
     }
-    Prn(OUT, 1, "  Temperature-external "+String(temperatureC)+"°C");
   #endif
   // Prn(OUT, 1, "  Humidity "+String()+"%");
   // if(cardType!=CARD_NONE){
@@ -2438,6 +2470,12 @@ void ListCommands(int OUT){
     }
     #if defined(DS18B20)
       // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
+      Prn(OUT, 0,"      s  external temperature Sensor DS18B20 [O");
+        if(ExtTemp==true){
+          Prn(OUT, 1,"N]");
+        }else{
+          Prn(OUT, 1,"FF]");
+        }
     #endif
   if(TxUdpBuffer[2]!='n'){
     Prn(OUT, 1,"      &  send broadcast packet");
@@ -3399,7 +3437,10 @@ void TelnetAuth(){
         Prn(1, 1,String(char(incomingByte)));
         TelnetAuthStep++;
       }else if(incomingByte!=121 && incomingByte!=0){
+        TelnetServerClients[0].stop();
+        TelnetAuthorized=false;
         TelnetAuthStep=0;
+        // TelnetServerClientAuth = {0,0,0,0};
       }
       break; }
     case 2: {
