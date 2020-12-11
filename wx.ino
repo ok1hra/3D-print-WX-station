@@ -32,7 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
-20201121 - external sensor enable from CLI
+20201211 - external sensor enable from CLI
 20200815 - js url fix
 20200814 - add WatchdogTimer for reset
 20200620 - addd frenetic mode, calibrate rain sensor
@@ -47,7 +47,7 @@ ToDo
 
 */
 //-------------------------------------------------------------------------------------------------------
-#define DS18B20                     // external 1wire Temperature sensor
+// #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
 #define HTU21D                      // humidity I2C sensor
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
@@ -525,11 +525,12 @@ void setup() {
     SpeedAlertLimit_ms = EEPROM.read(232);
   }
 
-  // 233   - ExtTemp ON/OFF;
-  if(EEPROM.read(233)<2){
-    ExtTemp=EEPROM.read(233);
-  }
-
+  #if defined(DS18B20)
+    // 233   - ExtTemp ON/OFF;
+    if(EEPROM.read(233)<2){
+      ExtTemp=EEPROM.read(233);
+    }
+  #endif
 
   // if(EnableSerialDebug>0){
     Serial.println();
