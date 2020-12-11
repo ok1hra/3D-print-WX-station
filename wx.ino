@@ -47,7 +47,7 @@ ToDo
 
 */
 //-------------------------------------------------------------------------------------------------------
-// #define DS18B20                     // external 1wire Temperature sensor
+#define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
 #define HTU21D                      // humidity I2C sensor
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
@@ -3438,7 +3438,7 @@ void TelnetAuth(){
         Prn(1, 1,String(char(incomingByte)));
         TelnetAuthStep++;
       }else if(incomingByte!=121 && incomingByte!=0){
-        TelnetServerClients[0].stop();
+        // TelnetServerClients[0].stop();
         TelnetAuthorized=false;
         TelnetAuthStep=0;
         // TelnetServerClientAuth = {0,0,0,0};
