@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20210116 - WDT bug fix, command listing after telnet login
 20201211 - external sensor enable from CLI
 20200815 - js url fix
 20200814 - add WatchdogTimer for reset
@@ -55,7 +56,7 @@ ToDo
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20201121";
+const char* REV = "20210116";
 
 // values
 const int keyNumber = 1;
@@ -295,6 +296,7 @@ int TelnetAuthStepFails=0;
 int TelnetLoginFails=0;
 long TelnetLoginFailsBanTimer[2]={0,600000};
 int RandomNumber;
+bool FirstListCommands=true;
 
 int CompareInt;
 
@@ -633,6 +635,9 @@ void setup() {
     // ArduinoOTA.setPasswordHash("5587ba7a03b12a409ee5830cea97e079");
     ArduinoOTA
       .onStart([]() {
+        esp_task_wdt_reset();
+        WdtTimer=millis();
+
         Interrupts(false);
         String type;
         if (ArduinoOTA.getCommand() == U_FLASH)
@@ -1194,6 +1199,10 @@ void Watchdog(){
     Interrupts(true);
   }
 
+  if(!TelnetServerClients[0].connected() && FirstListCommands==false){
+    FirstListCommands=true;
+  }
+
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -1218,6 +1227,10 @@ void CLI(){
       // incomingByte = TelnetRX();
       if(incomingByte!=0){
         OUT=1;
+        ListCommands(OUT);
+        if(FirstListCommands==true){
+          FirstListCommands=false;
+        }
       }
     }
   }else if(!TelnetServerClients[0].connected()){
@@ -1225,6 +1238,8 @@ void CLI(){
   }
 
   if(OUT<2){
+    esp_task_wdt_reset();
+    WdtTimer=millis();
 
     // ?
     if(incomingByte==63){
@@ -1694,6 +1709,7 @@ void CLI(){
       TelnetAuthorized=false;
       // TelnetServerClientAuth = {0,0,0,0};
       TelnetAuthStep=0;
+      FirstListCommands=true;
 
     // Q
     }else if(incomingByte==81 && TelnetServerClients[0].connected() ){
@@ -1702,6 +1718,7 @@ void CLI(){
       TelnetServerClientAuth = {0,0,0,0};
       Prn(OUT, 1,String(TelnetServerClientAuth));
       TelnetAuthStep=0;
+      FirstListCommands=true;
       EEPROM.write(37, 0); // address, value
       EEPROM.write(38, 0); // address, value
       EEPROM.write(39, 0); // address, value
@@ -3583,6 +3600,7 @@ void Telnet(){
         if (TelnetServerClients[i]) {
           TelnetServerClients[i].stop();
           TelnetAuthorized=false;
+          FirstListCommands=true;
           // TelnetServerClientAuth = {0,0,0,0};
         }
       }
