@@ -56,7 +56,7 @@ ToDo
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20210116";
+const char* REV = "20210122";
 
 // values
 const int keyNumber = 1;
@@ -117,7 +117,7 @@ int i = 0;
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "EEPROM.h"
-#define EEPROM_SIZE 233   /*
+#define EEPROM_SIZE 234   /*
 0    -listen source
 1    -net ID
 2    -encoder range
@@ -148,6 +148,9 @@ int i = 0;
 231 - PressureOfset offset
 232 - SpeedAlert
 233 - DS18B20 on/off
+
+!! Increment EEPROM_SIZE #define !!
+
 */
 int PressureOfset = 0;
 bool needEEPROMcommit = false;
