@@ -32,6 +32,8 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20210123 - calculate pressure with altitude TNX OK1IRG, add altitude settings in CLI
+20210122 - bugfix DS18B20 eeprom set
 20210116 - WDT bug fix, command listing after telnet login
 20201211 - external sensor enable from CLI
 20200815 - js url fix
@@ -56,7 +58,7 @@ ToDo
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20210122";
+const char* REV = "20210123";
 
 // values
 const int keyNumber = 1;
@@ -145,14 +147,14 @@ int i = 0;
 204-207 - APRS server port
 208-212 - APRS password
 213-230 - APRS coordinate
-231 - PressureOfset offset
+231 - Altitude
 232 - SpeedAlert
 233 - DS18B20 on/off
 
 !! Increment EEPROM_SIZE #define !!
 
 */
-int PressureOfset = 0;
+int Altitude = 0;
 bool needEEPROMcommit = false;
 unsigned int RebootWatchdog;
 unsigned int OutputWatchdog;
@@ -520,12 +522,12 @@ void setup() {
     }
   }
 
-  // 231 PressureOfset
+  // 231 Altitude
   if(EEPROM.readByte(231)!=255){
-    PressureOfset = EEPROM.read(231);
+    Altitude = EEPROM.read(231);
   }
 
-  // 232 PressureOfset
+  // 232 AlertLimit
   if(EEPROM.readByte(232)!=255){
     SpeedAlertLimit_ms = EEPROM.read(232);
   }
@@ -731,6 +733,20 @@ void Interrupts(boolean ON){
 }
 
 //-------------------------------------------------------------------------------------------------------
+
+// Prepocet tlaku vzduchu z absolutni hodnoty na hladinu more (OK1IRG)
+// double CMain::Babinet(double Pz, double T){
+double Babinet(double Pz, double T){
+  double C, P0;
+  // prepocet provadime podle Babinetova vzorce - nejdriv spocti teplotni korekci
+  C = 16e3 * (1 + T/273);
+  // vypocti tlak na hladine more
+  P0 = Pz * (C + double(Altitude)) / (C - double(Altitude));
+  return(P0);
+}
+
+
+//-------------------------------------------------------------------------------------------------------
 // ToDo
 // https://techtutorialsx.com/2017/10/07/esp32-arduino-timer-interrupts/
 void RPMcount(){
@@ -910,8 +926,8 @@ void AprsWxIgate() {
       +"/"+LeadingZero(3,PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])/0.447)
       +"g"+LeadingZero(3,PulseToMetterBySecond(PeriodMinRpmPulse)/0.447)
       +"t"+LeadingZero(3,htu.readTemperature()*1.8+32)
-      +"h"+LeadingZero(3,htu.readHumidity())
-      +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset)
+      +"h"+LeadingZero(3,constrain(htu.readHumidity(), 0, 100))
+      +"b"+LeadingZero(6,Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32)))
       +"P"+LeadingZero(3,RainPulseToMM(RainCount)/0.254) );
     }
     String StrBuf;
@@ -939,8 +955,8 @@ void AprsWxIgate() {
     //   +"t"+LeadingZero(3,htu.readTemperature()*1.8+32)
     // #endif
     +"t"+StrBuf
-    +"h"+LeadingZero(3,htu.readHumidity())
-    +"b"+LeadingZero(6,bmp.readPressure()+PressureOfset)
+    +"h"+LeadingZero(3,constrain(htu.readHumidity(), 0, 100))
+    +"b"+LeadingZero(6,Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32)))
     +"P"+LeadingZero(3,RainPulseToMM(RainCount)/0.254) );
 
     if(EnableSerialDebug>0){
@@ -1155,7 +1171,7 @@ void Watchdog(){
 
     #if defined(BMP280)
       if(BMP280enable==true){
-        MqttPubString("Pressure-hPa", String(bmp.readPressure()/100+PressureOfset), false);
+        MqttPubString("Pressure-hPa", String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100), false);
         MqttPubString("TemperatureBak-Celsius", String(bmp.readTemperature()), false);
       }else{
         MqttPubString("Pressure-hPa", "n/a", false);
@@ -1164,7 +1180,7 @@ void Watchdog(){
     #endif
     #if defined(HTU21D)
       if(HTU21Denable==true){
-        MqttPubString("HumidityRel-Percent", String(htu.readHumidity()), false);
+        MqttPubString("HumidityRel-Percent", String(constrain(htu.readHumidity(), 0, 100)), false);
         MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
       }else{
         MqttPubString("HumidityRel-Percent", "n/a", false);
@@ -1887,9 +1903,9 @@ void CLI(){
     // }
   #endif
 
-  // O
-}else if(incomingByte==79){
-    Prn(OUT, 1,"write pressure sensor ofset +-50 [enter]");
+// m
+}else if(incomingByte==109){
+    Prn(OUT, 1,"write your altitude in meter [enter]");
     Enter();
     int intBuf=0;
     int mult=1;
@@ -1902,9 +1918,9 @@ void CLI(){
         mult = mult*10;
       }
     }
-    if(intBuf>=-50 && intBuf<=50){
-      PressureOfset = intBuf;
-      EEPROM.write(231, PressureOfset); // address, value
+    if(intBuf>=0 && intBuf<=7300){
+      Altitude = intBuf;
+      EEPROM.write(231, Altitude); // address, value
       EEPROM.commit();
     }else{
       Prn(OUT, 1," Out of range");
@@ -2285,7 +2301,7 @@ void ListCommands(int OUT){
   #if defined(HTU21D)
     if(HTU21Denable==true){
       Prn(OUT, 1, "  Temperature "+String(htu.readTemperature())+"°C");
-      Prn(OUT, 1, "  Humidity relative "+String(htu.readHumidity())+"%");
+      Prn(OUT, 1, "  Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"%");
     }else{
       Prn(OUT, 1, "  Temperature n/a");
       Prn(OUT, 1, "  Humidity relative n/a");
@@ -2293,7 +2309,7 @@ void ListCommands(int OUT){
   #endif
   #if defined(BMP280)
     if(BMP280enable==true){
-      Prn(OUT, 1, "  Pressure "+String(bmp.readPressure()/100+PressureOfset)+" hPa");
+      Prn(OUT, 1, "  Pressure "+String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100)+" hPa ["+String(bmp.readPressure()/100)+" raw]");
       Prn(OUT, 1, "  Temperature-bak "+String(bmp.readTemperature())+"°C");
     }else{
       Prn(OUT, 1, "  Pressure n/a");
@@ -2353,8 +2369,8 @@ void ListCommands(int OUT){
   Prn(OUT, 1,"      ?  list status and commands");
   Prn(OUT, 0,"      a  speed Alert [");
   Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s] - not implemented");
-  Prn(OUT, 0,"      O  pressure ofset [");
-  Prn(OUT, 1, String(PressureOfset)+" hPa]");
+  Prn(OUT, 0,"      m  Altitude [");
+  Prn(OUT, 1, String(Altitude)+" m]");
   if(TxUdpBuffer[2]!='n'){
     Prn(OUT, 0,"      w  inactivity reboot watchdog ");
     if(RebootWatchdog>0){
