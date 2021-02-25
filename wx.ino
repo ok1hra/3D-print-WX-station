@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20210131 - add to menu erase windspeed max memory, fix max speed bug, disable internal temperature sensor
 20210123 - calculate pressure with altitude TNX OK1IRG, add altitude settings in CLI
 20210122 - bugfix DS18B20 eeprom set
 20210116 - WDT bug fix, command listing after telnet login
@@ -58,7 +59,7 @@ ToDo
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20210123";
+const char* REV = "20210131";
 
 // values
 const int keyNumber = 1;
@@ -119,7 +120,7 @@ int i = 0;
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "EEPROM.h"
-#define EEPROM_SIZE 234   /*
+#define EEPROM_SIZE 240   /*
 0    -listen source
 1    -net ID
 2    -encoder range
@@ -139,17 +140,19 @@ int i = 0;
 41-140 - Authorised telnet client key
 141-160 - YOUR_CALL
 161-164 - MQTT broker IP
-165-168? - MQTT broker port
-169-172  - MinRpmPulse
+165-168? - MQTT broker port 4
+169-172  - MinRpmPulse 4
 173-198  - MinRpmPulseTimestamp
 199   - APRS ON/OFF;
 200-203 - APRS server IP
-204-207 - APRS server port
+204-207 - APRS server port 4
 208-212 - APRS password
 213-230 - APRS coordinate
-231 - Altitude
-232 - SpeedAlert
-233 - DS18B20 on/off
+231-234 - Altitude 4
+// 232 - SpeedAlert 4
+235-238 - SpeedAlert 4
+// 233 - DS18B20 on/off 1
+239 - DS18B20 on/off 1
 
 !! Increment EEPROM_SIZE #define !!
 
@@ -494,7 +497,11 @@ void setup() {
   if(MinRpmPulse<=0){
     MinRpmPulse=987654321;
   }
-  MinRpmPulseTimestamp = EEPROM.readString(173);
+
+  // 173
+  if(EEPROM.readByte(173)!=255){
+    MinRpmPulseTimestamp = EEPROM.readString(173);
+  }
 
   // 199   - APRS ON/OFF;
   if(EEPROM.read(199)<2){
@@ -522,20 +529,20 @@ void setup() {
     }
   }
 
-  // 231 Altitude
+  // 231-234 Altitude
   if(EEPROM.readByte(231)!=255){
-    Altitude = EEPROM.read(231);
+    Altitude = EEPROM.readInt(231);
   }
 
-  // 232 AlertLimit
-  if(EEPROM.readByte(232)!=255){
-    SpeedAlertLimit_ms = EEPROM.read(232);
+  // 235-238 AlertLimit
+  if(EEPROM.readByte(235)!=255){
+    SpeedAlertLimit_ms = EEPROM.readInt(235);
   }
 
   #if defined(DS18B20)
-    // 233   - ExtTemp ON/OFF;
-    if(EEPROM.read(233)<2){
-      ExtTemp=EEPROM.read(233);
+    // 239   - ExtTemp ON/OFF;
+    if(EEPROM.read(239)<2){
+      ExtTemp=EEPROM.read(239);
     }
   #endif
 
@@ -759,7 +766,7 @@ void RPMcount(){
       PeriodMinRpmPulse=RpmPulse;
       PeriodMinRpmPulseTimestamp=UtcTime(1);
     }
-    if(RpmPulse<MinRpmPulse){
+    if(RpmPulse<MinRpmPulse && needEEPROMcommit==false){
       // MinRpmPulseTimestamp=UtcTime(1);
       MinRpmPulseTimestamp=PeriodMinRpmPulseTimestamp;
       EEPROM.writeLong(169, RpmPulse);
@@ -767,20 +774,10 @@ void RPMcount(){
       MinRpmPulse=RpmPulse;
       needEEPROMcommit = true;
     }
-
-    // if(RpmPulse<SpeedAlertLimit_ms){
-    //   if(RpmPulse<SpeedAlert_ms){
-    //     SpeedAlert_ms=RpmPulse;
-    //     AlertTimer[0]=millis();
-    //   }
-    // }
-
-
     if(RpmPulse<RpmTimer[1]){
       RpmAverage[1]=RpmAverage[1]+RpmPulse;
       RpmAverage[0]++;
     }
-
   }
   Interrupts(true);
 }
@@ -1172,26 +1169,28 @@ void Watchdog(){
     #if defined(BMP280)
       if(BMP280enable==true){
         MqttPubString("Pressure-hPa", String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100), false);
-        MqttPubString("TemperatureBak-Celsius", String(bmp.readTemperature()), false);
+        // MqttPubString("TemperatureBak-Celsius", String(bmp.readTemperature()), false);
       }else{
         MqttPubString("Pressure-hPa", "n/a", false);
-        MqttPubString("TemperatureBak-Celsius", "n/a", false);
+        // MqttPubString("TemperatureBak-Celsius", "n/a", false);
       }
     #endif
     #if defined(HTU21D)
       if(HTU21Denable==true){
         MqttPubString("HumidityRel-Percent", String(constrain(htu.readHumidity(), 0, 100)), false);
-        MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
+        // MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
       }else{
         MqttPubString("HumidityRel-Percent", "n/a", false);
-        MqttPubString("Temperature-Celsius", "n/a", false);
+        // MqttPubString("Temperature-Celsius", "n/a", false);
       }
     #endif
     #if defined(DS18B20)
       if(ExtTemp==true){
         sensors.requestTemperatures();
         float temperatureC = sensors.getTempCByIndex(0);
-        MqttPubString("TemperatureExternal-Celsius", String(temperatureC), false);
+        MqttPubString("Temperature-Celsius", String(temperatureC), false);
+      }else{
+        MqttPubString("Temperature-Celsius", "n/a", false);
       }
     #endif
 
@@ -1341,7 +1340,12 @@ void CLI(){
     Prn(OUT, 1,"  NOTE: public remoteqth broker 54.38.157.134:1883");
     for (int i=0; i<5; i++){
       if(i==4){
-        Prn(OUT, 1,"enter IP port (1-65535) and [enter]");
+        Prn(OUT, 0,"enter IP port (1-65535) and press [");
+      }
+      if(TelnetAuthorized==true){
+        Prn(OUT, 1,"enter]");
+      }else{
+        Prn(OUT, 1,";]");
       }
       Enter();
       int intBuf=0;
@@ -1760,7 +1764,13 @@ void CLI(){
 
     // L
   }else if(incomingByte==76){
-      Prn(OUT, 1,"  Input new location (CALLSIGN-ssid) and press [enter]. If blank, will be use MAC");
+      Prn(OUT, 0,"  Input new location (CALLSIGN-ssid) and press [");
+      if(TelnetAuthorized==true){
+        Prn(OUT, 0,"enter");
+      }else{
+        Prn(OUT, 0,";");
+      }
+      Prn(OUT, 1,"]. If blank, will be use MAC");
       Enter();
       YOUR_CALL="";
       for (int i=1; i<21; i++){
@@ -1808,7 +1818,12 @@ void CLI(){
     Prn(OUT, 1,"  (for example 89.235.48.27:14580)");
     for (int i=0; i<5; i++){
       if(i==4){
-        Prn(OUT, 1,"enter IP port (1-65535) and [enter]");
+        Prn(OUT, 0,"enter IP port (1-65535) and press [");
+      }
+      if(TelnetAuthorized==true){
+        Prn(OUT, 1,"enter]");
+      }else{
+        Prn(OUT, 1,";]");
       }
       Enter();
       int intBuf=0;
@@ -1843,7 +1858,12 @@ void CLI(){
 
   // p
 }else if(incomingByte==112 && AprsON==true){
-      Prn(OUT, 1,"  Input APRS i-gate password and press [enter].");
+      Prn(OUT, 0,"  Input APRS i-gate password and press [");
+      if(TelnetAuthorized==true){
+        Prn(OUT, 1,"enter]");
+      }else{
+        Prn(OUT, 1,";]");
+      }
       Enter();
       AprsPassword="";
       for (int i=1; i<6; i++){
@@ -1858,9 +1878,14 @@ void CLI(){
 
   // c
   }else if(incomingByte==99 && AprsON==true){
-      Prn(OUT, 1,"  Input WX coordinates and press [enter] in format.");
       Prn(OUT, 1,"  ddmm.ssN/dddmm.ssE | dd-degrees | mm-minutes | ss-seconds | N-north, S-south.");
       Prn(OUT, 1,"  for example 5108.41N/01259.35E");
+      Prn(OUT, 0,"  Input WX coordinates and press [");
+      if(TelnetAuthorized==true){
+        Prn(OUT, 1,"enter]");
+      }else{
+        Prn(OUT, 1,";]");
+      }
       Enter();
       AprsCoordinates="";
       for (int i=1; i<19; i++){
@@ -1882,7 +1907,7 @@ void CLI(){
       }else{
         Prn(OUT, 1,"** External temp sensor DISABLE **");
       }
-        EEPROM.write(233, ExtTemp); // address, value
+        EEPROM.write(239, ExtTemp); // address, value
         EEPROM.commit();
 
     // s
@@ -1905,7 +1930,12 @@ void CLI(){
 
 // m
 }else if(incomingByte==109){
-    Prn(OUT, 1,"write your altitude in meter [enter]");
+    Prn(OUT, 0,"write your altitude in meter, and press [");
+    if(TelnetAuthorized==true){
+      Prn(OUT, 1,"enter]");
+    }else{
+      Prn(OUT, 1,";]");
+    }
     Enter();
     int intBuf=0;
     int mult=1;
@@ -1920,15 +1950,33 @@ void CLI(){
     }
     if(intBuf>=0 && intBuf<=7300){
       Altitude = intBuf;
-      EEPROM.write(231, Altitude); // address, value
+      EEPROM.writeInt(231, Altitude); // address, value
       EEPROM.commit();
     }else{
       Prn(OUT, 1," Out of range");
     }
 
+// W
+}else if(incomingByte==87){
+    Prn(OUT, 1,"** Erase WindSpeedMax memory? [y/n] **");
+    EnterChar(OUT);
+    if(incomingByte==89 || incomingByte==121){
+      EEPROM.writeLong(169, 0); // 987654321
+      EEPROM.commit();
+      MqttPubString("WindSpeedMax-mps", "0", true);
+      MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
+    }else{
+      Prn(OUT, 1,"  bye");
+    }
+
   // a
 }else if(incomingByte==97){
-    Prn(OUT, 1,"write limit for wind speed alert 0-60 m/s [enter]");
+    Prn(OUT, 0,"write limit for wind speed alert 0-60 m/s, and press [");
+    if(TelnetAuthorized==true){
+      Prn(OUT, 1,"enter]");
+    }else{
+      Prn(OUT, 1,";]");
+    }
     Enter();
     int intBuf=0;
     int mult=1;
@@ -1943,7 +1991,7 @@ void CLI(){
     }
     if(intBuf>=0 && intBuf<=60){
       SpeedAlertLimit_ms = MpsToMs(intBuf);
-      EEPROM.write(232, SpeedAlertLimit_ms); // address, value
+      EEPROM.writeInt(235, SpeedAlertLimit_ms); // address, value
       EEPROM.commit();
     }else{
       Prn(OUT, 1," Out of range");
@@ -1982,7 +2030,7 @@ void Enter(){
     while(br==false) {
       if(Serial.available()){
         incomingByte=Serial.read();
-        if(incomingByte==13){
+        if(incomingByte==13 || incomingByte==59){ // CR or ;
           br=true;
           Prn(OUT, 1,"");
         }else{
@@ -2300,20 +2348,16 @@ void ListCommands(int OUT){
   Prn(OUT, 1, "             lifetime MAX "+String(MinRpmPulse)+"ms | "+String(PulseToMetterBySecond(MinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(MinRpmPulse)*3.6)+" km/h ("+String(MinRpmPulseTimestamp)+")");
   #if defined(HTU21D)
     if(HTU21Denable==true){
-      Prn(OUT, 1, "  Temperature "+String(htu.readTemperature())+"°C");
-      Prn(OUT, 1, "  Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"%");
+      Prn(OUT, 1, "  Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"% ["+String(htu.readTemperature())+"°C]");
     }else{
-      Prn(OUT, 1, "  Temperature n/a");
       Prn(OUT, 1, "  Humidity relative n/a");
     }
   #endif
   #if defined(BMP280)
     if(BMP280enable==true){
-      Prn(OUT, 1, "  Pressure "+String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100)+" hPa ["+String(bmp.readPressure()/100)+" raw]");
-      Prn(OUT, 1, "  Temperature-bak "+String(bmp.readTemperature())+"°C");
+      Prn(OUT, 1, "  Pressure "+String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100)+" hPa ["+String(bmp.readPressure()/100)+" raw] "+String(bmp.readTemperature())+"°C");
     }else{
       Prn(OUT, 1, "  Pressure n/a");
-      Prn(OUT, 1, "  Temperature-bak n/a");
     }
   #endif
   #if defined(DS18B20)
@@ -2330,7 +2374,7 @@ void ListCommands(int OUT){
           ; // wait for serial port to connect. Needed for native USB port only
         }
       }
-      Prn(OUT, 1, "  Temperature-external "+String(temperatureC)+"°C");
+      Prn(OUT, 1, "  Temperature "+String(temperatureC)+"°C");
     }
   #endif
   // Prn(OUT, 1, "  Humidity "+String()+"%");
@@ -2367,10 +2411,24 @@ void ListCommands(int OUT){
   // Prn(OUT, 1,"- none");
   // Prn(OUT, 1,"");
   Prn(OUT, 1,"      ?  list status and commands");
+  Prn(OUT, 0,"      m  Altitude [");
+  Prn(OUT, 0, String(Altitude)+" m]");
+  if(Altitude==0){
+    Prn(OUT, 0, " PLEASE SET ALTITUDE");
+  }
+  Prn(OUT, 1, "");
+
+  #if defined(DS18B20)
+    // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
+    Prn(OUT, 0,"      s  external temperature Sensor DS18B20 [O");
+      if(ExtTemp==true){
+        Prn(OUT, 1,"N]");
+      }else{
+        Prn(OUT, 1,"FF] PLEASE CONNECT SENSOR");
+      }
+  #endif
   Prn(OUT, 0,"      a  speed Alert [");
   Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s] - not implemented");
-  Prn(OUT, 0,"      m  Altitude [");
-  Prn(OUT, 1, String(Altitude)+" m]");
   if(TxUdpBuffer[2]!='n'){
     Prn(OUT, 0,"      w  inactivity reboot watchdog ");
     if(RebootWatchdog>0){
@@ -2505,15 +2563,6 @@ void ListCommands(int OUT){
       Prn(OUT, 0,"         c  change APRS coordinate | ");
       Prn(OUT, 1,AprsCoordinates);
     }
-    #if defined(DS18B20)
-      // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
-      Prn(OUT, 0,"      s  external temperature Sensor DS18B20 [O");
-        if(ExtTemp==true){
-          Prn(OUT, 1,"N]");
-        }else{
-          Prn(OUT, 1,"FF]");
-        }
-    #endif
   if(TxUdpBuffer[2]!='n'){
     Prn(OUT, 1,"      &  send broadcast packet");
   }
@@ -2533,6 +2582,7 @@ void ListCommands(int OUT){
     Prn(OUT, 1,"      2  I2C scanner");
   #endif
   Prn(OUT, 1,"      .  reset timer and send measure");
+  Prn(OUT, 1,"      W  erase wind speed max memory");
   Prn(OUT, 1,"      @  restart device");
   Prn(OUT, 1,"---------------------------------------------");
   Prn(OUT, 1, "" );
