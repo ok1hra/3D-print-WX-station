@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20210225 - eeprom bugfix
 20210131 - add to menu erase windspeed max memory, fix max speed bug, disable internal temperature sensor
 20210123 - calculate pressure with altitude TNX OK1IRG, add altitude settings in CLI
 20210122 - bugfix DS18B20 eeprom set
@@ -59,7 +60,7 @@ ToDo
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20210131";
+const char* REV = "20210225";
 
 // values
 const int keyNumber = 1;
