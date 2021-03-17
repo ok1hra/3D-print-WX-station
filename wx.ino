@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20210316 - web firmware upload
 20210225 - eeprom bugfix
 20210131 - add to menu erase windspeed max memory, fix max speed bug, disable internal temperature sensor
 20210123 - calculate pressure with altitude TNX OK1IRG, add altitude settings in CLI
@@ -52,6 +53,7 @@ ToDo
 
 */
 //-------------------------------------------------------------------------------------------------------
+#define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
 #define HTU21D                      // humidity I2C sensor
@@ -60,7 +62,7 @@ ToDo
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20210225";
+const char* REV = "20210316";
 
 // values
 const int keyNumber = 1;
@@ -185,6 +187,12 @@ String HTTP_req;
 #if defined(EnableOTA)
   #include <ESPmDNS.h>
   #include <ArduinoOTA.h>
+#endif
+#if defined(OTAWEB)
+  #include <AsyncTCP.h>
+  #include <ESPAsyncWebServer.h>
+  #include <AsyncElegantOTA.h>
+  AsyncWebServer OTAserver(82);
 #endif
 
 #define MQTT               // Enable MQTT debug
@@ -680,6 +688,13 @@ void setup() {
 
     ArduinoOTA.begin();
   #endif
+  #if defined(OTAWEB)
+    OTAserver.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/plain", "PSE QSY to /update");
+    });
+    AsyncElegantOTA.begin(&OTAserver);    // Start ElegantOTA
+    OTAserver.begin();
+  #endif
 
   #if defined(Ser2net)
     Serial_one.begin(SERIAL1_BAUDRATE, SERIAL_8N1, RX1, TX1);
@@ -726,6 +741,14 @@ void loop() {
   */
   #if defined(EnableOTA)
    ArduinoOTA.handle();
+  #endif
+
+  #if defined(OTAWEB)
+   // OTAserver.on("/printIp", HTTP_GET, [](AsyncWebServerRequest *request){
+   //     request->send(200, "text/plain", "ok");
+   //     Serial.println(request->client()->remoteIP());
+   // });
+   AsyncElegantOTA.loop();
   #endif
 }
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
@@ -2002,17 +2025,20 @@ void CLI(){
     // }else if(incomingByte==10){
     //   Prn(OUT, 1,"");
 
+    // CR/LF
+    }else if(incomingByte==13||incomingByte==10){
+
     // anykey
     }else{
-      // Prn(OUT, 0," [");
-      // Prn(OUT, 0, String(incomingByte) ); //, DEC);
-      // Prn(OUT, 1,"] unknown command");
-      // ListCommands(OUT);
+      if(EnableSerialDebug>0){
+        Prn(OUT, 0," [");
+        Prn(OUT, 0, String(incomingByte) ); //, DEC);
+        Prn(OUT, 1,"] unknown command");
+      }
     }
     incomingByte=0;
   }
 }
-
 //-------------------------------------------------------------------------------------------------------
 void Enter(){
   int OUT;
@@ -3197,6 +3223,11 @@ void http(){
             webClient.print(YOUR_CALL);
             webClient.println(F("\" target=_blank>APRS</a>"));
           }
+          #if defined(OTAWEB)
+            webClient.print(F(" | <a href=\"http://"));
+            webClient.println(ETH.localIP());
+            webClient.print(F(":82/update\" target=_blank>Upload FW</a>"));
+          #endif
           // END STATUS
           webClient.println(F("              </p>"));
           webClient.println(F("              </div>"));
