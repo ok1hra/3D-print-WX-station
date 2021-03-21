@@ -3229,7 +3229,7 @@ void http(){
           #if defined(OTAWEB)
             webClient.print(F(" | <a href=\"http://"));
             webClient.println(ETH.localIP());
-            webClient.print(F(":82/update\" target=_blank>Upload FW</a>"));
+            webClient.print(F(":82/update\" target=_blank>Upload FW</a> | <a href=\"https://github.com/ok1hra/3D-print-WX-station/releases\" target=_blank>Releases</a>"));
           #endif
           // END STATUS
           webClient.println(F("              </p>"));
