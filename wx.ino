@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20210322 - get actual data on request, via MQTT topic /get (any message)
 20210321 - used inaccurate internal temperature sensor, if external DS18B20 disable
 20210316 - web firmware upload
 20210225 - eeprom bugfix
@@ -3372,8 +3373,9 @@ void Mqtt(){
       long now = millis();
       if (now - lastMqttReconnectAttempt > 5000) {
         lastMqttReconnectAttempt = now;
-        Serial.print("Attempt to MQTT reconnect | ");
-        Serial.println(millis()/1000);
+        if(EnableSerialDebug>0){
+          Prn(3, 1, "Attempt to MQTT reconnect | "+String(millis()/1000) );
+        }
         if (mqttReconnect()) {
           lastMqttReconnectAttempt = 0;
         }
@@ -3395,38 +3397,21 @@ bool mqttReconnect() {
   // memcpy( charbuf, ETH.macAddress(), 6);
   ETH.macAddress().toCharArray(charbuf, 18);
   if (mqttClient.connect(charbuf)) {
-    Prn(3, 0, " > connected");
-    IPAddress IPlocalAddr = ETH.localIP();                           // get
-    String IPlocalAddrString = String(IPlocalAddr[0]) + "." + String(IPlocalAddr[1]) + "." + String(IPlocalAddr[2]) + "." + String(IPlocalAddr[3]);   // to string
+    if(EnableSerialDebug>0){
+      Prn(3, 0, "mqttReconnect-connected");
+    }
+    // IPAddress IPlocalAddr = ETH.localIP();                           // get
+    // String IPlocalAddrString = String(IPlocalAddr[0]) + "." + String(IPlocalAddr[1]) + "." + String(IPlocalAddr[2]) + "." + String(IPlocalAddr[3]);   // to string
     // MqttPubStringQC(1, "IP", IPlocalAddrString, true);
 
     // resubscribe
 
-      // _verified
-      String topic = String(YOUR_CALL) + "/WX/sub";
-      const char *cstr = topic.c_str();
-      if(mqttClient.subscribe(cstr)==true){
-        Prn(3, 0, " > subscribe");
-        if(EnableSerialDebug>0){
-          Prn(3, 1, String(cstr));
-        }
-
-      //     MqttPubStringQC(0, "test_report", DATA, false);
-      //     MqttPubStringQC(0, "test_report_verified", DATA, false);
-
-      // // mode
-      // topic = String(YOUR_CALL) + "/OI3/" + String(MASTER_NET_ID, HEX) + "/mode";
-      // const char *cstr1 = topic.c_str();
-      // if(mqttClient.subscribe(cstr1)==true){
-      //   // lcd.clear();
-      //   // lcd.setCursor(1, 0);
-      //   // lcd.print(F("subscribe"));
-      //   lcd.setCursor(0, 1);
-      //   lcd.print(cstr1);
-      //   Debugging("MQTT subscribe to "+String(cstr1));
-      //   delay(500);
-      //   // lcd.clear();
-      // }
+    String topic = String(YOUR_CALL) + "/WX/get";
+    const char *cstr = topic.c_str();
+    if(mqttClient.subscribe(cstr)==true){
+      if(EnableSerialDebug>0){
+        Prn(3, 1, " > subscribe "+String(cstr));
+      }
     }
   }
   return mqttClient.connected();
@@ -3434,31 +3419,51 @@ bool mqttReconnect() {
 
 //------------------------------------------------------------------------------------
 void MqttRx(char *topic, byte *payload, unsigned int length) {
-  String CheckTopicBase; // = String(YOUR_CALL) + "/OI3/" + String(NET_ID, HEX) + "/";
-  // const char *cstr = CheckTopic.c_str();
-  // if (strcmp(topic, cstr)==0){
+  String CheckTopicBase;
+  CheckTopicBase.reserve(100);
   byte* p = (byte*)malloc(length);
-
-  Serial.println("MQTTrx...");
-  // _verified
-
-    CheckTopicBase = String(YOUR_CALL) + "/WX/sub";
-
-  if ( CheckTopicBase.equals( String(topic) )){
-    // memcpy(p,payload,length);
-    MqttPubString("status", "MQTT_RX", false);
-    if(EnableSerialDebug>0){
-      Prn(3, 1, "MQTT_RX");
-    }
-    // Result=true;
-
-      // for (int i = 0; i < length; i++) {
-      //   if(p[i]!=0){
-      //     send_char(toUpperCase(p[i]),KEYER_NORMAL);
-      //     // Debugging(String(i)+"-"+p[i]);
-      //   }
-      // }
+  memcpy(p,payload,length);
+  // static bool HeardBeatStatus;
+  if(EnableSerialDebug>0){
+    Prn(3, 0, "RX MQTT ");
   }
+
+    CheckTopicBase = String(YOUR_CALL) + "/WX/get";
+    if ( CheckTopicBase.equals( String(topic) )){
+      if(EnableSerialDebug>0){
+        Prn(3, 1, "/get ");
+      }
+      Interrupts(false);
+
+      Azimuth();
+      MqttPubString("WindDir-azimuth", String(WindDir), false);
+
+      #if defined(DS18B20)
+        if(ExtTemp==true){
+          sensors.requestTemperatures();
+          float temperatureC = sensors.getTempCByIndex(0);
+          MqttPubString("Temperature-Celsius", String(temperatureC), false);
+        }else{
+          MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
+        }
+      #endif
+
+      MqttPubString("WindSpeedMaxPeriod-mps", String(PulseToMetterBySecond(PeriodMinRpmPulse)), false);
+
+      #if defined(BMP280)
+        if(BMP280enable==true){
+          MqttPubString("Pressure-hPa", String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100), false);
+        }
+      #endif
+
+      #if defined(HTU21D)
+        if(HTU21Denable==true){
+          MqttPubString("HumidityRel-Percent", String(constrain(htu.readHumidity(), 0, 100)), false);
+        }
+      #endif
+
+      Interrupts(true);
+    }
 
 } // MqttRx END
 
