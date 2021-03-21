@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20210321 - used inaccurate internal temperature sensor, if external DS18B20 disable
 20210316 - web firmware upload
 20210225 - eeprom bugfix
 20210131 - add to menu erase windspeed max memory, fix max speed bug, disable internal temperature sensor
@@ -62,7 +63,7 @@ ToDo
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20210316";
+const char* REV = "20210321";
 
 // values
 const int keyNumber = 1;
@@ -1214,7 +1215,8 @@ void Watchdog(){
         float temperatureC = sensors.getTempCByIndex(0);
         MqttPubString("Temperature-Celsius", String(temperatureC), false);
       }else{
-        MqttPubString("Temperature-Celsius", "n/a", false);
+        // MqttPubString("Temperature-Celsius", "n/a", false);
+        MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
       }
     #endif
 
@@ -2451,7 +2453,7 @@ void ListCommands(int OUT){
       if(ExtTemp==true){
         Prn(OUT, 1,"N]");
       }else{
-        Prn(OUT, 1,"FF] PLEASE CONNECT SENSOR");
+        Prn(OUT, 1,"FF] CONNECT SENSOR (used inaccurate internal)");
       }
   #endif
   Prn(OUT, 0,"      a  speed Alert [");
