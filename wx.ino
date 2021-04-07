@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20210407 - disable local CLI
 20210322 - get actual data on request, via MQTT topic /get (any message)
 20210321 - used inaccurate internal temperature sensor, if external DS18B20 disable
 20210316 - web firmware upload
@@ -64,7 +65,7 @@ ToDo
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20210321";
+const char* REV = "20210407";
 
 // values
 const int keyNumber = 1;
@@ -557,7 +558,7 @@ void setup() {
     }
   #endif
 
-  // if(EnableSerialDebug>0){
+  if(EnableSerialDebug>0){
     Serial.println();
     Serial.print("Version: ");
     Serial.println(REV);
@@ -584,7 +585,7 @@ void setup() {
     Serial.println("  press '?' for list commands");
     Serial.println();
     Serial.println();
-  // }
+  }
 
   #if defined(WIFI)
     if(EnableSerialDebug>0){
@@ -1282,7 +1283,7 @@ void CLI(){
     TelnetAuthStep=0;
   }
 
-  if(OUT<2){
+  if(OUT==1){
     esp_task_wdt_reset();
     WdtTimer=millis();
 
@@ -2033,6 +2034,7 @@ void CLI(){
 
     // anykey
     }else{
+
       if(EnableSerialDebug>0){
         Prn(OUT, 0," [");
         Prn(OUT, 0, String(incomingByte) ); //, DEC);
@@ -2040,7 +2042,11 @@ void CLI(){
       }
     }
     incomingByte=0;
+
+  }else if(OUT==0){
+    ListCommands(OUT);
   }
+
 }
 //-------------------------------------------------------------------------------------------------------
 void Enter(){
@@ -2251,6 +2257,399 @@ void Prn(int OUT, int LN, String STR){
 
 //-------------------------------------------------------------------------------------------------------
 void ListCommands(int OUT){
+
+  if(OUT==0){
+    Prn(OUT, 1,"");
+    Prn(OUT, 1,"");
+    Prn(OUT, 1," ==========================");
+    Prn(OUT, 1," Please save the IP address");
+      Prn(OUT, 1, " "+String(ETH.localIP()[0])+"."+String(ETH.localIP()[1])+"."+String(ETH.localIP()[2])+"."+String(ETH.localIP()[3]) );
+      Prn(OUT, 1," --------------------------");
+    Prn(OUT, 1," And save telnet access key:");
+    Prn(OUT, 1,"");
+    Prn(OUT, 0,"    ");
+      for(int i=0; i<100; i++){
+        Prn(OUT, 0, String(key[i]));
+        if((i+1)%10==0){
+          Prn(OUT, 1,"");
+          Prn(OUT, 0,"    ");
+        }
+      }
+      Prn(OUT, 1,"");
+      Prn(OUT, 1," Then disconnect the USB, connect the POE injector, and log in using telnet");
+      Prn(OUT, 1," More information https://remoteqth.com/w/doku.php?id=3d_print_wx_station#second_step_connect_remotely_via_ip");
+      Prn(OUT, 1," ==========================");
+      Prn(OUT, 1,"");
+  }else{
+    #if defined(ETHERNET)
+      Prn(OUT, 1,"");
+      Prn(OUT, 1,"------  WX station [ESP32-POE] status  ------");
+      Prn(OUT, 0,"  http://");
+      Prn(OUT, 1, String(ETH.localIP()[0])+"."+String(ETH.localIP()[1])+"."+String(ETH.localIP()[2])+"."+String(ETH.localIP()[3]) );
+      Prn(OUT, 0,"  ETH: MAC ");
+      Prn(OUT, 0, String(ETH.macAddress()[0], HEX)+":"+String(ETH.macAddress()[1], HEX)+":"+String(ETH.macAddress()[2], HEX)+":"+String(ETH.macAddress()[3], HEX)+":"+String(ETH.macAddress()[4], HEX)+":"+String(ETH.macAddress()[5], HEX)+", " );
+      Prn(OUT, 0, String(ETH.linkSpeed()) );
+      Prn(OUT, 0,"Mbps");
+      if (ETH.fullDuplex()) {
+        Prn(OUT, 0,", FULL_DUPLEX ");
+      }
+    #else
+      Prn(OUT, 0,"  ETHERNET OFF ");
+    #endif
+    #if defined(WIFI)
+      Prn(OUT, 1,"  =================================");
+      Prn(OUT, 0,"  http://");
+      Prn(OUT, 1, String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) );
+      Prn(OUT, 0,"  dBm: ");
+      Prn(OUT, 1, String(WiFi.RSSI()) );
+    #else
+      Prn(OUT, 1,"  WIFI: OFF");
+    #endif
+
+    if(OUT==0){
+      Prn(OUT, 1,"  Key for telnet access:");
+      Prn(OUT, 0,"    ");
+      for(int i=0; i<100; i++){
+        Prn(OUT, 0, String(key[i]));
+        if((i+1)%10==0){
+          Prn(OUT, 0," ");
+        }
+      }
+      Prn(OUT, 1,"");
+    }
+    // Prn(OUT, 1, "  ChipID: "+ChipidHex);
+
+    Prn(OUT, 0,"  NTP UTC:");
+    Prn(OUT, 1, UtcTime(1));
+    Prn(OUT, 0,"  Uptime: ");
+    if(millis() < 60000){
+      Prn(OUT, 0, String(millis()/1000) );
+      Prn(OUT, 1," second");
+    }else if(millis() > 60000 && millis() < 3600000){
+      Prn(OUT, 0, String(millis()/60000) );
+      Prn(OUT, 1," minutes");
+    }else if(millis() > 3600000 && millis() < 86400000){
+      Prn(OUT, 0, String(millis()/3600000) );
+      Prn(OUT, 1," hours");
+    }else{
+      Prn(OUT, 0, String(millis()/86400000) );
+      Prn(OUT, 1," days");
+    }
+
+    if(RebootWatchdog > 0){
+      Prn(OUT, 0,"> Reboot countdown in ");
+      Prn(OUT, 0, String(RebootWatchdog-((millis()-WatchdogTimer)/60000)) );
+      Prn(OUT, 1, " minutes");
+    }
+    if(OutputWatchdog > 0 && OutputWatchdog<123456){
+      Prn(OUT, 0,"> Clear output countdown in ");
+      Prn(OUT, 0, String(OutputWatchdog-((millis()-WatchdogTimer)/60000)) );
+      Prn(OUT, 1," minutes");
+    }
+
+    Prn(OUT, 0,"  MqttSubscribe: "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT)+"/");
+      String topic = String(YOUR_CALL) + "/WX/sub";
+      const char *cstr = topic.c_str();
+      if(mqttClient.subscribe(cstr)==true){
+        Prn(OUT, 1, String(cstr));
+      }else{
+        Prn(OUT, 1, "FALSE");
+      }
+
+    Prn(OUT, 0,"  Firmware: ");
+    Prn(OUT, 1, String(REV));
+
+
+    Prn(OUT, 0,"  micro SD card present: ");
+    uint8_t cardType = SD_MMC.cardType();
+
+    if(cardType == CARD_NONE){
+        Prn(OUT, 1,"none ");
+        // return;
+    }else if(cardType == CARD_MMC){
+        Prn(OUT, 1,"MMC ");
+    } else if(cardType == CARD_SD){
+        Prn(OUT, 1,"SDSC ");
+    } else if(cardType == CARD_SDHC){
+        Prn(OUT, 1,"SDHC ");
+    } else {
+        Prn(OUT, 1,"unknown ");
+    }
+
+    Prn(OUT, 0,"  RpmPin ");
+      Prn(OUT, 0,String(digitalRead(RpmPin)));
+    Prn(OUT, 0," | Rain1Pin ");
+      Prn(OUT, 0,String(digitalRead(Rain1Pin)));
+    Prn(OUT, 0," | Rain2Pin ");
+      Prn(OUT, 1,String(digitalRead(Rain2Pin)));
+    // Prn(OUT, 0," | ButtonPin ");
+    //   Prn(OUT, 1, String(digitalRead(ButtonPin)));
+    Prn(OUT, 1,"---------------------------------------------");
+    if(digitalRead(Rain1Pin)==digitalRead(Rain2Pin)){
+      Prn(OUT, 1,"! Rain sensor malformed" );
+    }else{
+      Prn(OUT, 1,"  "+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+" | "+String(RainPulseToMM(RainCount))+"mm" );
+    }
+    // if(EnableSerialDebug>0){
+    // }else{
+    // }
+    Azimuth();
+    Prn(3, 0,"  Azimuth ");
+    Prn(3, 1,String(Azimuth(),BIN));
+    if(WindDir==1){
+      Prn(OUT, 1,"! Wind direction sensor malformed" );
+    }else{
+      Prn(OUT, 1, "  Wind direction "+String(WindDir)+"°");
+    }
+    Prn(OUT, 1, "  Wind speed last "+String(RpmPulse)+"ms | "+String(PulseToMetterBySecond(RpmPulse))+"m/s | "+String(PulseToMetterBySecond(RpmPulse)*3.6)+" km/h");
+    Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+"ms | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+"m/s | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+" km/h");
+    Prn(OUT, 1, "             MAX in period "+String(PeriodMinRpmPulse)+"ms | "+String(PulseToMetterBySecond(PeriodMinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h ("+String(PeriodMinRpmPulseTimestamp)+")");
+    Prn(OUT, 1, "             lifetime MAX "+String(MinRpmPulse)+"ms | "+String(PulseToMetterBySecond(MinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(MinRpmPulse)*3.6)+" km/h ("+String(MinRpmPulseTimestamp)+")");
+    #if defined(HTU21D)
+      if(HTU21Denable==true){
+        Prn(OUT, 1, "  Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"% ["+String(htu.readTemperature())+"°C]");
+      }else{
+        Prn(OUT, 1, "  Humidity relative n/a");
+      }
+    #endif
+    #if defined(BMP280)
+      if(BMP280enable==true){
+        Prn(OUT, 1, "  Pressure "+String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100)+" hPa ["+String(bmp.readPressure()/100)+" raw] "+String(bmp.readTemperature())+"°C");
+      }else{
+        Prn(OUT, 1, "  Pressure n/a");
+      }
+    #endif
+    #if defined(DS18B20)
+      if(ExtTemp==true){
+        if(OUT==0){
+          Serial.flush();
+          Serial.end();
+        }
+        sensors.requestTemperatures();
+        float temperatureC = sensors.getTempCByIndex(0);
+        if(OUT==0){
+          Serial.begin(SERIAL_BAUDRATE);
+          while(!Serial) {
+            ; // wait for serial port to connect. Needed for native USB port only
+          }
+        }
+        Prn(OUT, 1, "  Temperature "+String(temperatureC)+"°C");
+      }
+    #endif
+    // Prn(OUT, 1, "  Humidity "+String()+"%");
+    // if(cardType!=CARD_NONE){
+    //   uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+    //   // Serial.printf("SD_MMC Card Size: %lluMB\n", cardSize);
+    //   Prn(OUT, 1," | size "+String(printf("%lluMB", cardSize)));
+    // }
+    Prn(OUT, 1,"---------------------------------------------");
+    // Prn(OUT, 1,"  You can change source, with send character:");
+    // if(TxUdpBuffer[2]=='m'){
+    //   Prn(OUT, 0,"     [m]");
+    // }else{
+    //   Prn(OUT, 0,"      m ");
+    // }
+    // Prn(OUT, 1,"- IP switch master");
+    // if(TxUdpBuffer[2]=='r'){
+    //   Prn(OUT, 0,"     [r]");
+    // }else{
+    //   Prn(OUT, 0,"      r ");
+    // }
+    // Prn(OUT, 1,"- Band decoder");
+    // if(TxUdpBuffer[2]=='o'){
+    //   Prn(OUT, 0,"     [o]");
+    // }else{
+    //   Prn(OUT, 0,"      o ");
+    // }
+    // Prn(OUT, 1,"- Open Interface III");
+    // if(TxUdpBuffer[2]=='n'){
+    //   Prn(OUT, 0,"     [n]");
+    // }else{
+    //   Prn(OUT, 0,"      n ");
+    // }
+    // Prn(OUT, 1,"- none");
+    // Prn(OUT, 1,"");
+    Prn(OUT, 1,"      ?  list status and commands");
+    Prn(OUT, 0,"      m  Altitude [");
+    Prn(OUT, 0, String(Altitude)+" m]");
+    if(Altitude==0){
+      Prn(OUT, 0, " PLEASE SET ALTITUDE");
+    }
+    Prn(OUT, 1, "");
+
+    #if defined(DS18B20)
+      // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
+      Prn(OUT, 0,"      s  external temperature Sensor DS18B20 [O");
+        if(ExtTemp==true){
+          Prn(OUT, 1,"N]");
+        }else{
+          Prn(OUT, 1,"FF] CONNECT SENSOR (used inaccurate internal)");
+        }
+    #endif
+    Prn(OUT, 0,"      a  speed Alert [");
+    Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s] - not implemented");
+    if(TxUdpBuffer[2]!='n'){
+      Prn(OUT, 0,"      w  inactivity reboot watchdog ");
+      if(RebootWatchdog>0){
+        Prn(OUT, 0,"after [");
+        Prn(OUT, 0, String(RebootWatchdog) );
+        Prn(OUT, 1,"] minutes");
+      }else{
+        Prn(OUT, 1,"[disable]");
+      }
+      Prn(OUT, 0,"      W  inactivity clear output watchdog ");
+      if(OutputWatchdog>0){
+        Prn(OUT, 0,"after [");
+        Prn(OUT, 0, String(OutputWatchdog) );
+        Prn(OUT, 1,"] minutes");
+      }else{
+        Prn(OUT, 1,"[disable]");
+      }
+      Prn(OUT, 0,"      <  change Switch incoming UDP port [");
+      Prn(OUT, 0, String(IncomingSwitchUdpPort) );
+      Prn(OUT, 0,"]");
+      if(IncomingSwitchUdpPort!=88){
+        Prn(OUT, 0,"<-- WARNING! default is 88");
+      }
+      Prn(OUT, 1,"");
+    }
+    if(TxUdpBuffer[2] == 'm'){
+      Prn(OUT, 0,"      /  set encoder range - now [");
+      Prn(OUT, 0, String(NumberOfEncoderOutputs+1) );
+      if(NumberOfEncoderOutputs>7){
+        Prn(OUT, 1,"] (two bank)");
+      }else{
+        Prn(OUT, 1,"]");
+      }
+      Prn(OUT, 0,"      %  group buttons (select one from group) [");
+      if(EnableGroupButton==true){
+        Prn(OUT, 1,"ON]");
+        Prn(OUT, 1,"         !  SET group buttons");
+        Prn(OUT, 1,"         :  list group buttons");
+      }else{
+        Prn(OUT, 1,"OFF]");
+      }
+    }
+    Prn(OUT, 0,"      *  serial debug ");
+      if(EnableSerialDebug==0){
+        Prn(OUT, 1,"[OFF]");
+      }else if(EnableSerialDebug==1){
+        Prn(OUT, 1,"[ON]");
+      }else if(EnableSerialDebug==2){
+        Prn(OUT, 1,"[ON-frenetic]");
+      }
+    if(TxUdpBuffer[2]!='n'){
+      Prn(OUT, 0,"      #  network ID prefix [");
+      byte ID = NET_ID;
+      bitClear(ID, 0); // ->
+      bitClear(ID, 1);
+      bitClear(ID, 2);
+      bitClear(ID, 3);
+      ID = ID >> 4;
+      if(EnableGroupPrefix==true && TxUdpBuffer[2]=='m'){
+        Prn(OUT, 0,"x");
+      }else{
+        Prn(OUT, 0, String(ID, HEX) );
+      }
+      Prn(OUT, 0,"] hex");
+      if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
+        Prn(OUT, 0," (set only on controllers)");
+      }
+      Prn(OUT, 1,"");
+
+      // if(HW_BCD_SW==false){
+        ID = NET_ID;
+        bitClear(ID, 4);
+        bitClear(ID, 5);
+        bitClear(ID, 6);
+        bitClear(ID, 7); // <-
+        Prn(OUT, 0,"         +network ID sufix [");
+        Prn(OUT, 0, String(ID, HEX) );
+        Prn(OUT, 0,"] hex");
+        if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
+          Prn(OUT, 0," (multi control group - same at all)");
+        }
+        Prn(OUT, 1,"");
+      // }
+
+      if(TxUdpBuffer[2]=='m'){
+        Prn(OUT, 0,"      $  group network ID prefix (multi control) [");
+        if(EnableGroupPrefix==true){
+          Prn(OUT, 1,"ON]");
+        }else{
+          Prn(OUT, 1,"OFF]");
+        }
+      }
+      if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
+        Prn(OUT, 1,"      .  list detected IP switch (multi control)");
+      }
+    }
+    #if defined(Ser2net)
+      Prn(OUT, 0,"      (  change serial1 baudrate [");
+      Prn(OUT, 0, String(SERIAL1_BAUDRATE) );
+      Prn(OUT, 1,"]");
+      Prn(OUT, 0,"      )  change ser2net IP port [");
+      Prn(OUT, 0, String(SerialServerIPport) );
+      Prn(OUT, 1,"]");
+    #endif
+
+    Prn(OUT, 1, "      +  change MQTT broker IP | "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT));
+    // Prn(OUT, 0, String(mqtt_server_ip));
+    // Prn(OUT, 0, ":");
+    // Prn(OUT, 1, String(MQTT_PORT));
+    Prn(OUT, 0,"      L  change ");
+    if(AprsON==true){
+      Prn(OUT, 1,"CALLSIGN with ssid 6-4 | "+YOUR_CALL);
+    }else{
+      Prn(OUT, 1,"location | "+YOUR_CALL);
+    }
+    Prn(OUT, 0,"      A  APRS [");
+      if(AprsON==true){
+        Prn(OUT, 1,"ON]");
+      }else{
+        Prn(OUT, 1,"OFF]");
+      }
+      if(AprsON==true){
+        Prn(OUT, 0,"         i  change APRS server ip:port | ");
+        Prn(OUT, 1,String(aprs_server_ip[0])+"."+String(aprs_server_ip[1])+"."+String(aprs_server_ip[2])+"."+String(aprs_server_ip[3])+":"+String(AprsPort));
+        Prn(OUT, 0,"         p  change APRS password | ");
+        for (int i=208; i<213; i++){
+          if(EEPROM.read(i)!=0xff){
+            Prn(OUT, 0,"*");
+          }
+        }
+        Prn(OUT, 1,"");
+        Prn(OUT, 0,"         c  change APRS coordinate | ");
+        Prn(OUT, 1,AprsCoordinates);
+      }
+    if(TxUdpBuffer[2]!='n'){
+      Prn(OUT, 1,"      &  send broadcast packet");
+    }
+    if(TelnetServerClients[0].connected()){
+      Prn(OUT, 0,"      q  disconnect and close telnet [verified IP ");
+      Prn(OUT, 0, String(TelnetServerClientAuth[0])+"."+String(TelnetServerClientAuth[1])+"."+String(TelnetServerClientAuth[2])+"."+String(TelnetServerClientAuth[3]) );
+      Prn(OUT, 1,"]");
+      Prn(OUT, 1,"      Q  logout with erase your IP from memory and close telnet");
+    }else{
+      Prn(OUT, 1,"      E  erase whole eeprom (telnet key also)");
+      // Prn(OUT, 1,"      C  eeprom commit");
+      Prn(OUT, 1,"      /  list directory");
+      Prn(OUT, 1,"      R  read log file");
+    }
+    Prn(OUT, 1,"      e  list EEPROM");
+    #if !defined(BMP280) && !defined(HTU21D)
+      Prn(OUT, 1,"      2  I2C scanner");
+    #endif
+    Prn(OUT, 1,"      .  reset timer and send measure");
+    Prn(OUT, 1,"      W  erase wind speed max memory");
+    Prn(OUT, 1,"      @  restart device");
+    Prn(OUT, 1,"---------------------------------------------");
+    Prn(OUT, 1, "" );
+  }
+}
+
+//-------------------------------------------------------------------------------------------------------
+void ListCommandsObsolete(int OUT){
 
   #if defined(ETHERNET)
     Prn(OUT, 1,"");
