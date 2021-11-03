@@ -32,6 +32,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20210513 - add enable support, RF module support by https://github.com/jarodan
 20210407 - disable local CLI
 20210322 - get actual data on request, via MQTT topic /get (any message)
 20210321 - used inaccurate internal temperature sensor, if external DS18B20 disable
@@ -49,6 +50,10 @@ Changelog:
 20200424 - add support for external 1-wire temperature ensor (DS18B20)
 
 ToDo
+- Windy
+  https://community.windy.com/topic/8168/report-your-weather-station-data-to-windy
+  https://github.com/zpukr/esp8266-WindStation/blob/master/esp8266-WindStation.ino
+- Sunset https://github.com/buelowp/sunset/blob/master/examples/esp/example.ino
 - add DNS
 - telnet inactivity to close
 - SD card log
@@ -60,12 +65,14 @@ ToDo
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
 #define HTU21D                      // humidity I2C sensor
+// #define RF69_EXTERNAL_SENSOR        // RX temp and humidity radio sensor RF69
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
 // #define WIFI                     // Enable ESP32 WIFI (DHCP IPv4) - NOT TESTED
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20210407";
+const char* REV = "20210513";
+// unsigned long TimerTemp;
 
 // values
 const int keyNumber = 1;
@@ -246,7 +253,7 @@ byte ShiftOutByte[3];
 #define I2C_SCL 32
 
 #if defined(BMP280)||defined(HTU21D)
-  #include <SPI.h>
+  // #include <SPI.h>
   #include <Adafruit_Sensor.h>
   TwoWire I2Cone = TwoWire(0);
 #endif
@@ -265,9 +272,35 @@ byte ShiftOutByte[3];
   bool HTU21Denable;
 #endif
 
+// https://github.com/PaulStoffregen/RadioHead
+#if defined(RF69_EXTERNAL_SENSOR)
+  bool RF69enable;
+  #include <SPI.h>
+  #include <RH_RF69.h>
+  // Change to 434.0 or other frequency, must match RX's freq!
+  #define RF69_FREQ 434.0
+  #define RFM69_RST     -1   // same as LED
+  #define RFM69_CS      0   // "B"
+  #define RFM69_INT     16   // "A"
+
+  // Singleton instance of the radio driver
+  RH_RF69 rf69(RFM69_CS, RFM69_INT);
+
+  int16_t packetnum = 0;  // packet counter, we increment per xmission
+  String received_data;
+  float humidity, temp_f, temp_f2, temp_PT100, temp_dallas;
+  String temp_radio;
+  String humidity_radio;
+  String vbat_radio;
+
+  uint8_t buf[RH_RF69_MAX_MESSAGE_LEN];
+  uint8_t len = sizeof(buf);
+#endif
+
 const int RpmPin = 39;
 const int Rain1Pin = 36;
 const int Rain2Pin = 35;
+const int EnablePin = 13;
 // const int ButtonPin = 34;
 
 #if defined(Ser2net)
@@ -348,6 +381,21 @@ void setup() {
     sensors.begin();
   #endif
 
+  // for (int i = 0; i < 8; i++) {
+  //   pinMode(TestPin[i], INPUT);
+  // }
+  pinMode(RpmPin, INPUT);
+  pinMode(Rain1Pin, INPUT);
+  pinMode(Rain2Pin, INPUT);
+  pinMode(EnablePin, OUTPUT);
+  digitalWrite(EnablePin,1);
+
+  // pinMode(ButtonPin, INPUT);
+  // SHIFT IN
+  pinMode(ShiftInLatchPin, OUTPUT);
+  pinMode(ShiftInClockPin, OUTPUT);
+  pinMode(ShiftInDataPin, INPUT);
+
   Serial.begin(SERIAL_BAUDRATE);
   while(!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
@@ -355,11 +403,13 @@ void setup() {
 
   #if defined(BMP280)
     I2Cone.begin(I2C_SDA, I2C_SCL, 100000); // SDA pin 21, SCL pin 22, 100kHz frequency
+    Serial.print("BMP280 sensor init ");
     if(!bmp.begin(0x76)){
-      Serial.println(F(" *** Could not find a valid BMP280 sensor!"));
+      Serial.println("failed!");
       // while (1) delay(10);
       BMP280enable=false;
     }else{
+      Serial.println("OK");
       BMP280enable=true;
       /* Default settings from datasheet. */
       bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
@@ -373,11 +423,13 @@ void setup() {
 
   #if defined(HTU21D)
     Wire.begin(I2C_SDA, I2C_SCL);
+    Serial.print("HTU21D sensor init ");
     if(!htu.begin()){
-      Serial.println(F(" *** Could not find a valid HTU21D sensor!"));
+      Serial.println("failed!");
       // while (1);
       HTU21Denable=false;
     }else{
+      Serial.println("OK");
       HTU21Denable=true;
     }
   #endif
@@ -391,18 +443,6 @@ void setup() {
     Serial.println("SD card Mount Failed");
     // return;
   }
-
-  // for (int i = 0; i < 8; i++) {
-  //   pinMode(TestPin[i], INPUT);
-  // }
-  pinMode(RpmPin, INPUT);
-  pinMode(Rain1Pin, INPUT);
-  pinMode(Rain2Pin, INPUT);
-  // pinMode(ButtonPin, INPUT);
-  // SHIFT IN
-  pinMode(ShiftInLatchPin, OUTPUT);
-  pinMode(ShiftInClockPin, OUTPUT);
-  pinMode(ShiftInDataPin, INPUT);
 
   // Listen source
   if (!EEPROM.begin(EEPROM_SIZE)){
@@ -715,6 +755,46 @@ void setup() {
     RainStatus=true;
   }
 
+  #if defined(RF69_EXTERNAL_SENSOR)
+   // clock, miso,mosi, ss
+    SPI.begin(14, 15, 2, 0);
+    //while (!Serial) { delay(1); } // wait until serial console is open, remove if not tethered to computer
+
+    Serial.println();
+    Serial.print("RFM69 radio init ");
+    if (!rf69.init()) {
+      Serial.println("failed!");
+      RF69enable = false;
+      // while (1);
+    }else{
+      Serial.println("OK");
+      RF69enable = true;
+
+      // Defaults after init are 434.0MHz, modulation GFSK_Rb250Fd250, +13dbM (for low power module)
+      // No encryption
+      Serial.print("RFM69 setFrequency ");
+      if (!rf69.setFrequency(RF69_FREQ)) {
+        Serial.println("failed!");
+      }else{
+        Serial.println("OK");
+        // If you are using a high power RF69 eg RFM69HW, you *must* set a Tx power with the
+        // ishighpowermodule flag set like this:
+        rf69.setTxPower(20, true);  // range from 14-20 for power, 2nd arg must be true for 69HCW
+
+        // The encryption key has to be the same as the one in the server
+        uint8_t key[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+          0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
+        };
+        rf69.setEncryptionKey(key);
+        Serial.print("RFM69 radio @");  Serial.print((int)RF69_FREQ);  Serial.println(" MHz");
+      }
+    }
+
+  #endif
+  //------------------------------------------------
+
+  digitalWrite(EnablePin,0);
+
   // WDT
   esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
   esp_task_wdt_add(NULL); //add current thread to WDT watch
@@ -736,7 +816,19 @@ void loop() {
   // RX_UDP();
   CLI();
   Telnet();
+  check_radio();
   Watchdog();
+
+
+  // if(millis()-TimerTemp > 60000){
+  //   String StringUtc1 = UtcTime(1);
+  //   // MqttPubString("tmp/utc", StringUtc1, false);
+  //   sensors.requestTemperatures();
+  //   float temperatureC = sensors.getTempCByIndex(0);
+  //   MqttPubString("tmp/c", StringUtc1+" "+String(temperatureC), false);
+  //   TimerTemp=millis();
+  // }
+
   /*
   Scanning...
   I2C device found at address 0x40 - HTU21D - Humidity + Temp sensor
@@ -766,6 +858,48 @@ void Interrupts(boolean ON){
   }
 }
 
+//----------------------------RADIO--------------------------------------------------------------------
+// https://www.airspayce.com/mikem/arduino/RadioHead/classRH__RF69.html
+
+void check_radio() {
+  #if defined(RF69_EXTERNAL_SENSOR)
+    static long CheckRadioTimer;
+    if ((millis() - CheckRadioTimer) > 2000 && RF69enable==true){
+      Interrupts(false);
+      if (rf69.available()) {
+        if(EnableSerialDebug>0){
+          Prn(3, 0,"RF69 ");
+        }
+        if(rf69.recv(buf, &len)) {
+          if (!len) return;
+          buf[len] = 0;
+          received_data = ((char*)buf);
+          if(EnableSerialDebug>0){
+            Prn(3, 1,"RX: "+String(received_data) );
+          }
+          // Serial.print("Received:" );
+          // Serial.println(received_data);
+          temp_radio = getValue(received_data, ',', 0);
+          humidity_radio = getValue(received_data, ',', 1);
+          vbat_radio = getValue(received_data, ',', 2);
+          MqttPubString("RF-Temperature-Celsius", temp_radio, false);
+          MqttPubString("RF-HumidityRel-Percent", humidity_radio, false);
+          MqttPubString("RF-BattVoltage", vbat_radio, false);
+        }else{
+          if(EnableSerialDebug>0){
+            Prn(3, 1,"receive failed!");
+          }
+        }
+      // }else{
+      //   if(EnableSerialDebug>0){
+      //     Prn(3, 1,"RF69 not available!");
+      //   }
+      }
+      CheckRadioTimer=millis();
+      Interrupts(true);
+    }
+  #endif
+}
 //-------------------------------------------------------------------------------------------------------
 
 // Prepocet tlaku vzduchu z absolutni hodnoty na hladinu more (OK1IRG)
@@ -928,6 +1062,7 @@ byte Azimuth(){    // run from interrupt
 void AprsWxIgate() {
   #if defined(BMP280) && defined(HTU21D)
   if(AprsON==true){
+    digitalWrite(EnablePin,1);
     if (!AprsClient.connect(aprs_server_ip, AprsPort)) {
       if(EnableSerialDebug>0){
         Prn(3, 1,"APRS client connect failed!");
@@ -965,6 +1100,12 @@ void AprsWxIgate() {
       }
     #endif
 
+    #if defined(RF69_EXTERNAL_SENSOR)
+      if(temp_radio.toInt()>0 && RF69enable==true){
+        StrBuf=LeadingZero(3,temp_radio.toInt()*1.8+32);
+      }
+    #endif
+
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAS,:="
     +AprsCoordinates+"_"
     +LeadingZero(3,WindDir)
@@ -987,6 +1128,8 @@ void AprsWxIgate() {
       Prn(3, 1,"APRS-TX | "+YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
     }
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
+
+    digitalWrite(EnablePin,0);
   }
   #endif
 }
@@ -1135,6 +1278,7 @@ void Watchdog(){
 
   // Rain counter 5sec
   if(millis()-RainTimer[0]>RainTimer[1]){
+    digitalWrite(EnablePin,1);
     if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
       if(RainStatus==true){
         #if defined(HTU21D)
@@ -1169,12 +1313,13 @@ void Watchdog(){
     if(RainCountDayOfMonth=="n/a"){
       RainCountDayOfMonth=UtcTime(2);
     }
-
+    digitalWrite(EnablePin,0);
   }
 
   // Half hour
   if(millis()-MeasureTimer[0]>MeasureTimer[1] && eth_connected==true && mqttClient.connected()==true){
     Interrupts(false);
+    digitalWrite(EnablePin,1);
     if(UtcTime(2)!=RainCountDayOfMonth){
       RainCount=0;
       RainCountDayOfMonth=UtcTime(2);
@@ -1222,6 +1367,14 @@ void Watchdog(){
       }
     #endif
 
+    #if defined(RF69_EXTERNAL_SENSOR)
+      if(temp_radio.toInt()>0 && humidity_radio.toInt()>0 && vbat_radio.toInt()>0 && RF69enable==true){
+        MqttPubString("RF-Temperature-Celsius", temp_radio, false);
+        MqttPubString("RF-HumidityRel-Percent", humidity_radio, false);
+        MqttPubString("RF-BattVoltage", vbat_radio, false);
+      }
+    #endif
+
     AprsWxIgate();
 
     RpmAverage[0]=1;
@@ -1233,6 +1386,7 @@ void Watchdog(){
     // appendFile(SD_MMC, "/wx-"+String(UtcTime(3))+".txt", UtcTime(1) );
     MeasureTimer[0]=millis();
     Interrupts(true);
+    digitalWrite(EnablePin,0);
   }
 
   if(needEEPROMcommit==true){
@@ -1273,7 +1427,7 @@ void CLI(){
       // incomingByte = TelnetRX();
       if(incomingByte!=0){
         OUT=1;
-        ListCommands(OUT);
+        // ListCommands(OUT);
         if(FirstListCommands==true){
           FirstListCommands=false;
         }
@@ -2044,7 +2198,7 @@ void CLI(){
     incomingByte=0;
 
   }else if(OUT==0){
-    ListCommands(OUT);
+    // ListCommands(OUT);
   }
 
 }
@@ -2257,7 +2411,7 @@ void Prn(int OUT, int LN, String STR){
 
 //-------------------------------------------------------------------------------------------------------
 void ListCommands(int OUT){
-
+  digitalWrite(EnablePin,1);
   if(OUT==0){
     Prn(OUT, 1,"");
     Prn(OUT, 1,"");
@@ -2436,6 +2590,12 @@ void ListCommands(int OUT){
         Prn(OUT, 1, "  Temperature "+String(temperatureC)+"°C");
       }
     #endif
+    #if defined(RF69_EXTERNAL_SENSOR)
+      if(RF69enable==true){
+        Prn(OUT, 1, "  RF sensor: "+String(temp_radio)+"°C, "+String(humidity_radio)+"%, "+String(vbat_radio)+"V");
+      }
+    #endif
+
     // Prn(OUT, 1, "  Humidity "+String()+"%");
     // if(cardType!=CARD_NONE){
     //   uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
@@ -2646,6 +2806,7 @@ void ListCommands(int OUT){
     Prn(OUT, 1,"---------------------------------------------");
     Prn(OUT, 1, "" );
   }
+  digitalWrite(EnablePin,0);
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -3070,6 +3231,23 @@ byte AsciiToHex(int ASCII){
   }else{
     return(255);
   }
+}
+//-------------------------------------------------------------------------------------------------------
+
+String getValue(String data, char separator, int index)
+{
+  int found = 0;
+  int strIndex[] = { 0, -1 };
+  int maxIndex = data.length() - 1;
+
+  for (int i = 0; i <= maxIndex && found <= index; i++) {
+    if (data.charAt(i) == separator || i == maxIndex) {
+      found++;
+      strIndex[0] = strIndex[1] + 1;
+      strIndex[1] = (i == maxIndex) ? i + 1 : i;
+    }
+  }
+  return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -3833,6 +4011,7 @@ void MqttRx(char *topic, byte *payload, unsigned int length) {
         Prn(3, 1, "/get ");
       }
       Interrupts(false);
+      digitalWrite(EnablePin,1);
 
       Azimuth();
       MqttPubString("WindDir-azimuth", String(WindDir), false);
@@ -3861,7 +4040,16 @@ void MqttRx(char *topic, byte *payload, unsigned int length) {
         }
       #endif
 
+      #if defined(RF69_EXTERNAL_SENSOR)
+      if(temp_radio.toInt()>0 && humidity_radio.toInt()>0 && vbat_radio.toInt()>0 && RF69enable==true){
+        MqttPubString("RF-Temperature-Celsius", temp_radio, false);
+        MqttPubString("RF-HumidityRel-Percent", humidity_radio, false);
+        MqttPubString("RF-BattVoltage", vbat_radio, false);
+      }
+      #endif
+
       Interrupts(true);
+      digitalWrite(EnablePin,0);
     }
 
 } // MqttRx END
