@@ -1,5 +1,7 @@
 /*
 
+python /home/dan/Arduino/hardware/espressif/esp32/tools/esptool/esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 115200 --before default_reset --after hard_reset write_flash -z --flash_mode dio --flash_freq 80m --flash_size 4MB 0x10000 /home/dan/Arduino/hra/ok1hra/esp32/wx/20210407-wx.ino.esp32-poe.bin
+
 3D printed WX station
 ----------------------
 https://remoteqth.com/w/doku.php?id=3d_print_wx_station
@@ -32,6 +34,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20220307 - add wind direction shift settings for non North orientation, update for new lib
 20210513 - add enable support, RF module support by https://github.com/jarodan
 20210407 - disable local CLI
 20210322 - get actual data on request, via MQTT topic /get (any message)
@@ -59,6 +62,27 @@ ToDo
 - SD card log
 - clear code
 
+Použití knihovny WiFi ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/WiFi
+Použití knihovny EEPROM ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/EEPROM
+Použití knihovny Ethernet ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/Ethernet
+Použití knihovny ESPmDNS ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/ESPmDNS
+Použití knihovny ArduinoOTA ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/ArduinoOTA
+Použití knihovny Update ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/Update
+Použití knihovny AsyncTCP ve verzi 1.1.1 v adresáři: /home/dan/Arduino/libraries/AsyncTCP
+Použití knihovny ESPAsyncWebServer ve verzi 1.2.3 v adresáři: /home/dan/Arduino/libraries/ESPAsyncWebServer
+Použití knihovny FS ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/FS
+Použití knihovny AsyncElegantOTA ve verzi 2.2.5 v adresáři: /home/dan/Arduino/libraries/AsyncElegantOTA
+Použití knihovny PubSubClient ve verzi 2.8 v adresáři: /home/dan/Arduino/libraries/PubSubClient
+Použití knihovny Wire ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/Wire
+Použití knihovny Adafruit_Unified_Sensor ve verzi 1.1.2 v adresáři: /home/dan/Arduino/libraries/Adafruit_Unified_Sensor
+Použití knihovny Adafruit_BMP280_Library ve verzi 2.5.0 v adresáři: /home/dan/Arduino/libraries/Adafruit_BMP280_Library
+Použití knihovny Adafruit_BusIO ve verzi 1.9.8 v adresáři: /home/dan/Arduino/libraries/Adafruit_BusIO
+Použití knihovny SPI ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/SPI
+Použití knihovny Adafruit_HTU21DF_Library ve verzi 1.0.4 v adresáři: /home/dan/Arduino/libraries/Adafruit_HTU21DF_Library
+Použití knihovny SD_MMC ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/SD_MMC
+Použití knihovny OneWire ve verzi 2.3.6 v adresáři: /home/dan/Arduino/libraries/OneWire
+Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Arduino/libraries/DallasTemperature
+
 */
 //-------------------------------------------------------------------------------------------------------
 #define OTAWEB                      // enable upload firmware via web
@@ -67,11 +91,19 @@ ToDo
 #define HTU21D                      // humidity I2C sensor
 // #define RF69_EXTERNAL_SENSOR        // RX temp and humidity radio sensor RF69
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
+#define ETH_ADDR 0
+#define ETH_TYPE ETH_PHY_LAN8720
+#define ETH_POWER 12                // mosfet on VDDIO
+#define ETH_MDC 23                  // MDC pin17
+#define ETH_MDIO 18                 // MDIO pin16
+#define ETH_CLK ETH_CLOCK_GPIO17_OUT    // CLKIN pin5 | settings for ESP32 GATEWAY rev f-g
+// #define ETH_CLK ETH_CLOCK_GPIO0_OUT    // settings for ESP32 GATEWAY rev c and older
+// ETH.begin(ETH_ADDR, ETH_POWER, ETH_MDC, ETH_MDIO, ETH_TYPE, ETH_CLK);
 // #define WIFI                     // Enable ESP32 WIFI (DHCP IPv4) - NOT TESTED
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20210513";
+const char* REV = "20220307";
 // unsigned long TimerTemp;
 
 // values
@@ -85,7 +117,8 @@ String RainCountDayOfMonth;
 bool RainStatus;
 float mmInPulse = 0.154;        // rain mm in one rain pulse
 
-unsigned int WindDir = 0;
+int WindDir = 0;
+unsigned int WindDirShift = 0;
 
 long RpmTimer[2]={0,3000};
 long RpmPulse = 0;
@@ -133,7 +166,7 @@ int i = 0;
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "EEPROM.h"
-#define EEPROM_SIZE 240   /*
+#define EEPROM_SIZE 241   /*
 0    -listen source
 1    -net ID
 2    -encoder range
@@ -166,6 +199,7 @@ int i = 0;
 235-238 - SpeedAlert 4
 // 233 - DS18B20 on/off 1
 239 - DS18B20 on/off 1
+240 - WindDirShift 1
 
 !! Increment EEPROM_SIZE #define !!
 
@@ -402,7 +436,8 @@ void setup() {
   }
 
   #if defined(BMP280)
-    I2Cone.begin(I2C_SDA, I2C_SCL, 100000); // SDA pin 21, SCL pin 22, 100kHz frequency
+    // I2Cone.begin(0x76, I2C_SDA, I2C_SCL, 100000); // SDA pin, SCL pin, 100kHz frequency
+    I2Cone.begin(I2C_SDA, I2C_SCL, (uint32_t)100000); // SDA pin, SCL pin, 100kHz frequency
     Serial.print("BMP280 sensor init ");
     if(!bmp.begin(0x76)){
       Serial.println("failed!");
@@ -598,6 +633,11 @@ void setup() {
     }
   #endif
 
+  // 240 WindDirShift
+  if(EEPROM.readByte(240)!=255){
+    WindDirShift = EEPROM.readInt(240);
+  }
+
   if(EnableSerialDebug>0){
     Serial.println();
     Serial.print("Version: ");
@@ -658,7 +698,8 @@ void setup() {
     // MQTT_PORT = MQTT_PORT_Array[0];
 
     WiFi.onEvent(EthEvent);
-    ETH.begin();
+    // ETH.begin();
+    ETH.begin(ETH_ADDR, ETH_POWER, ETH_MDC, ETH_MDIO, ETH_TYPE, ETH_CLK);
     if(DHCP_ENABLE==false){
       ETH.config(IPAddress(192, 168, 1, 188), IPAddress(192, 168, 1, 255),IPAddress(255, 255, 255, 0),IPAddress(8, 8, 8, 8));
       //config(IPAddress local_ip, IPAddress gateway, IPAddress subnet, IPAddress dns1 = (uint32_t)0x00000000, IPAddress dns2 = (uint32_t)0x00000000);
@@ -809,17 +850,17 @@ void setup() {
 //-------------------------------------------------------------------------------------------------------
 
 void loop() {
-  // blank loop 80us
-  // SerialToIp();
   http();
   Mqtt();
-  // RX_UDP();
   CLI();
   Telnet();
-  check_radio();
   Watchdog();
 
+  // check_radio();
 
+  // blank loop 80us
+  // SerialToIp();
+  // RX_UDP();
   // if(millis()-TimerTemp > 60000){
   //   String StringUtc1 = UtcTime(1);
   //   // MqttPubString("tmp/utc", StringUtc1, false);
@@ -1000,60 +1041,67 @@ byte Azimuth(){    // run from interrupt
   }
   switch (rxShiftInByte){
     case 0b01111111:
-      WindDir=0;
+      AzShift(0);
       break;
     case 0b01111110:
-      WindDir=22;
+      AzShift(22);
       break;
     case 0b11111110:
-      WindDir=45;
+      AzShift(45);
       break;
     case 0b11111100:
-      WindDir=67;
+      AzShift(67);
       break;
     case 0b11111101:
-      WindDir=90;
+      AzShift(90);
       break;
     case 0b11111001:
-      WindDir=112;
+      AzShift(112);
       break;
     case 0b11111011:
-      WindDir=135;
+      AzShift(135);
       break;
     case 0b11110011:
-      WindDir=157;
+      AzShift(157);
       break;
     case 0b11110111:
-      WindDir=180;
+      AzShift(180);
       break;
     case 0b11100111:
-      WindDir=202;
+      AzShift(202);
       break;
     case 0b11101111:
-      WindDir=225;
+      AzShift(225);
       break;
     case 0b11001111:
-      WindDir=247;
+      AzShift(247);
       break;
     case 0b11011111:
-      WindDir=270;
+      AzShift(270);
       break;
     case 0b10011111:
-      WindDir=292;
+      AzShift(292);
       break;
     case 0b10111111:
-      WindDir=315;
+      AzShift(315);
       break;
     case 0b00111111:
-      WindDir=337;
+      AzShift(337);
       break;
     default:
-      WindDir=1;
+      WindDir=-1;
       break;
   }
   return rxShiftInByte;
 }
 
+//-------------------------------------------------------------------------------------------------------
+void AzShift(int AZ){
+  WindDir=AZ+WindDirShift;
+  if(WindDir>360){
+    WindDir=WindDir-360;
+  }
+}
 //-------------------------------------------------------------------------------------------------------
 // todo
 // if(BMP280enable==true){
@@ -1427,7 +1475,7 @@ void CLI(){
       // incomingByte = TelnetRX();
       if(incomingByte!=0){
         OUT=1;
-        // ListCommands(OUT);
+        ListCommands(OUT);
         if(FirstListCommands==true){
           FirstListCommands=false;
         }
@@ -1437,7 +1485,8 @@ void CLI(){
     TelnetAuthStep=0;
   }
 
-  if(OUT==1){
+  if(OUT==1){     // telnet only
+  // if(OUT>-1){  // always
     esp_task_wdt_reset();
     WdtTimer=millis();
 
@@ -2138,6 +2187,34 @@ void CLI(){
       Prn(OUT, 1," Out of range");
     }
 
+// S
+}else if(incomingByte==83){
+    Prn(OUT, 0,"write wind direction shift 0-359°, and press [");
+    if(TelnetAuthorized==true){
+      Prn(OUT, 1,"enter]");
+    }else{
+      Prn(OUT, 1,";]");
+    }
+    Enter();
+    int intBuf=0;
+    int mult=1;
+    for (int j=InputByte[0]; j>0; j--){
+      // detect -
+      if(j==1 && InputByte[j]==45){
+        intBuf = 0-intBuf;
+      }else{
+        intBuf = intBuf + ((InputByte[j]-48)*mult);
+        mult = mult*10;
+      }
+    }
+    if(intBuf>=0 && intBuf<=359){
+      WindDirShift = intBuf;
+      EEPROM.writeInt(240, WindDirShift); // address, value
+      EEPROM.commit();
+    }else{
+      Prn(OUT, 1," Out of range");
+    }
+
 // W
 }else if(incomingByte==87){
     Prn(OUT, 1,"** Erase WindSpeedMax memory? [y/n] **");
@@ -2198,7 +2275,7 @@ void CLI(){
     incomingByte=0;
 
   }else if(OUT==0){
-    // ListCommands(OUT);
+    ListCommands(OUT);
   }
 
 }
@@ -2434,7 +2511,8 @@ void ListCommands(int OUT){
       Prn(OUT, 1," More information https://remoteqth.com/w/doku.php?id=3d_print_wx_station#second_step_connect_remotely_via_ip");
       Prn(OUT, 1," ==========================");
       Prn(OUT, 1,"");
-  }else{
+  }
+  else{
     #if defined(ETHERNET)
       Prn(OUT, 1,"");
       Prn(OUT, 1,"------  WX station [ESP32-POE] status  ------");
@@ -2550,10 +2628,10 @@ void ListCommands(int OUT){
     Azimuth();
     Prn(3, 0,"  Azimuth ");
     Prn(3, 1,String(Azimuth(),BIN));
-    if(WindDir==1){
+    if(WindDir==-1){
       Prn(OUT, 1,"! Wind direction sensor malformed" );
     }else{
-      Prn(OUT, 1, "  Wind direction "+String(WindDir)+"°");
+      Prn(OUT, 1, "  Wind direction "+String(WindDir)+"° [with shift "+String(WindDirShift)+"°]");
     }
     Prn(OUT, 1, "  Wind speed last "+String(RpmPulse)+"ms | "+String(PulseToMetterBySecond(RpmPulse))+"m/s | "+String(PulseToMetterBySecond(RpmPulse)*3.6)+" km/h");
     Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+"ms | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+"m/s | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+" km/h");
@@ -2636,6 +2714,9 @@ void ListCommands(int OUT){
       Prn(OUT, 0, " PLEASE SET ALTITUDE");
     }
     Prn(OUT, 1, "");
+
+    Prn(OUT, 0,"      S  Wind direction shift [");
+    Prn(OUT, 1, String(WindDirShift)+"°]");
 
     #if defined(DS18B20)
       // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
@@ -2927,10 +3008,10 @@ void ListCommandsObsolete(int OUT){
   Azimuth();
   Prn(3, 0,"  Azimuth ");
   Prn(3, 1,String(Azimuth(),BIN));
-  if(WindDir==1){
+  if(WindDir==-1){
     Prn(OUT, 1,"! Wind direction sensor malformed" );
   }else{
-    Prn(OUT, 1, "  Wind direction "+String(WindDir)+"°");
+    Prn(OUT, 1, "  Wind direction "+String(WindDir)+"° [with shift "+String(WindDirShift)+"°]");
   }
   Prn(OUT, 1, "  Wind speed last "+String(RpmPulse)+"ms | "+String(PulseToMetterBySecond(RpmPulse))+"m/s | "+String(PulseToMetterBySecond(RpmPulse)*3.6)+" km/h");
   Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+"ms | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+"m/s | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+" km/h");
@@ -3875,15 +3956,18 @@ void http(){
 void EthEvent(WiFiEvent_t event)
 {
   switch (event) {
-    case SYSTEM_EVENT_ETH_START:
+    // case SYSTEM_EVENT_ETH_START:
+    case ARDUINO_EVENT_ETH_START:
       Serial.println("ETH  Started");
       //set eth hostname here
       ETH.setHostname("esp32-ethernet");
       break;
-    case SYSTEM_EVENT_ETH_CONNECTED:
+    // case SYSTEM_EVENT_ETH_CONNECTED:
+    case ARDUINO_EVENT_ETH_CONNECTED:
       Serial.println("ETH  Connected");
       break;
-    case SYSTEM_EVENT_ETH_GOT_IP:
+    // case SYSTEM_EVENT_ETH_GOT_IP:
+    case ARDUINO_EVENT_ETH_GOT_IP:
       Serial.print("ETH  MAC: ");
       Serial.println(ETH.macAddress());
       Serial.println("===============================");
@@ -3931,11 +4015,13 @@ void EthEvent(WiFiEvent_t event)
       // EnableSerialDebug=0;
       break;
 
-    case SYSTEM_EVENT_ETH_DISCONNECTED:
+    // case SYSTEM_EVENT_ETH_DISCONNECTED:
+    case ARDUINO_EVENT_ETH_DISCONNECTED:
       Serial.println("ETH  Disconnected");
       eth_connected = false;
       break;
-    case SYSTEM_EVENT_ETH_STOP:
+    // case SYSTEM_EVENT_ETH_STOP:
+    case ARDUINO_EVENT_ETH_STOP:
       Serial.println("ETH  Stopped");
       eth_connected = false;
       break;
