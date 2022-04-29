@@ -7,7 +7,7 @@ python /home/dan/Arduino/hardware/espressif/esp32/tools/esptool/esptool.py --chi
 https://remoteqth.com/w/doku.php?id=3d_print_wx_station
 TNX OK1IAK for code help
 
-___               _        ___ _____ _  _
+ ___               _        ___ _____ _  _
 | _ \___ _ __  ___| |_ ___ / _ \_   _| || |  __ ___ _ __
 |   / -_) '  \/ _ \  _/ -_) (_) || | | __ |_/ _/ _ \ '  \
 |_|_\___|_|_|_\___/\__\___|\__\_\|_| |_||_(_)__\___/_|_|_|
@@ -34,6 +34,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20220429 - add html preview page on port 88
 20220307 - add wind direction shift settings for non North orientation, update for new lib
 20210513 - add enable support, RF module support by https://github.com/jarodan
 20210407 - disable local CLI
@@ -103,7 +104,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20220307";
+const char* REV = "20220429";
 // unsigned long TimerTemp;
 
 // values
@@ -211,6 +212,7 @@ unsigned int OutputWatchdog;
 unsigned long WatchdogTimer=0;
 
 WiFiServer server(HTTP_SERVER_PORT);
+WiFiServer server2(HTTP_SERVER_PORT+8);
 bool DHCP_ENABLE = 1;
 // Client variables
 char linebuf[80];
@@ -706,6 +708,7 @@ void setup() {
     }
   #endif
     server.begin();
+    server2.begin();
     UdpCommand.begin(IncomingSwitchUdpPort);    // incoming udp port
     // chipid=ESP.getEfuseMac();//The chip ID is essentially its MAC address(length: 6 bytes).
     //   unsigned long long1 = (unsigned long)((chipid & 0xFFFF0000) >> 16 );
@@ -851,6 +854,7 @@ void setup() {
 
 void loop() {
   http();
+  http2();
   Mqtt();
   CLI();
   Telnet();
@@ -3887,7 +3891,9 @@ void http(){
           #if defined(OTAWEB)
             webClient.print(F(" | <a href=\"http://"));
             webClient.println(ETH.localIP());
-            webClient.print(F(":82/update\" target=_blank>Upload FW</a> | <a href=\"https://github.com/ok1hra/3D-print-WX-station/releases\" target=_blank>Releases</a>"));
+            webClient.print(F(":82/update\" target=_blank>Upload FW</a> | <a href=\"https://github.com/ok1hra/3D-print-WX-station/releases\" target=_blank>Releases</a> | <a href=\"http://"));
+            webClient.println(ETH.localIP());
+            webClient.print(F(":88\" target=_blank>html preview</a>"));
           #endif
           // END STATUS
           webClient.println(F("              </p>"));
@@ -3946,6 +3952,114 @@ void http(){
     webClient.stop();
    if(EnableSerialDebug>0){
      Serial.println("WIFI webClient disconnected");
+     MeasureTimer[0]=millis()+5000-MeasureTimer[1];
+   }
+   Interrupts(true);
+  }
+}
+//-------------------------------------------------------------------------------------------------------
+
+void http2(){
+  // listen for incoming clients
+  WiFiClient webClient2 = server2.available();
+  if (webClient2) {
+    Interrupts(false);
+    if(EnableSerialDebug>0){
+      Serial.println("WIFI New webClient2");
+    }
+    memset(linebuf,0,sizeof(linebuf));
+    charcount=0;
+    // an http request ends with a blank line
+    boolean currentLineIsBlank = true;
+    while (webClient2.connected()) {
+      if (webClient2.available()) {
+        char c = webClient2.read();
+        HTTP_req += c;
+        // if(EnableSerialDebug>0){
+        //   Serial.write(c);
+        // }
+        //read char by char HTTP request
+        linebuf[charcount]=c;
+        if (charcount<sizeof(linebuf)-1) charcount++;
+        // if you've gotten to the end of the line (received a newline
+        // character) and the line is blank, the http request has ended,
+        // so you can send a reply
+        if (c == '\n' && currentLineIsBlank) {
+          // send a standard http response header
+
+          // send a standard http response header
+          webClient2.println(F("HTTP/1.1 200 OK"));
+          webClient2.println(F("Content-Type: text/html"));
+          webClient2.println(F("Connection: close"));  // the connection will be closed after completion of the response
+          webClient2.println();
+          webClient2.print(F("<!doctype html><html><head><title>"));
+          webClient2.print(YOUR_CALL);
+          webClient2.print(F(" WX</title><meta http-equiv=\"refresh\" content=\"1800\"><meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\"><style type=\"text/css\">body {font-family: 'Roboto Condensed',sans-serif,Arial,Tahoma,Verdana; background: #444;}</style><link href='http://fonts.googleapis.com/css?family=Roboto+Condensed:300italic,400italic,700italic,400,700,300&subset=latin-ext' rel='stylesheet' type='text/css'></head><body><p style=\"color: #ccc; margin: 0 0 0 0; text-align: center;\"><span style=\"color: #999; font-size: 800%;\">"));
+          if(ExtTemp==true){
+            sensors.requestTemperatures();
+            float temperatureC = sensors.getTempCByIndex(0);
+            char buf[4];
+            dtostrf(temperatureC, 1, 0, buf);  //1 is mininum width, 0 is precision
+            webClient2.print(buf);
+          }else{
+            webClient2.print(String(htu.readTemperature()));
+          }
+          webClient2.println(F("&deg;</span><br><span style=\"color: #000; background: #080; padding: 4px 6px 4px 6px; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;\">"));
+          #if defined(HTU21D)
+            if(HTU21Denable==true){
+              webClient2.print(String(constrain(htu.readHumidity(), 0, 100)));
+            }
+          #endif
+          webClient2.print(F("% | "));
+          #if defined(BMP280)
+            if(BMP280enable==true){
+              webClient2.print(String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100));
+            }
+          #endif
+          webClient2.print(F(" hPa "));
+          if(RainCount>0){
+            webClient2.print(F("| <strong style=\"color: #00f;\">"));
+            webClient2.print(String(RainPulseToMM(RainCount)));
+            webClient2.print(F(" mm </span>"));
+          }
+          webClient2.print(F("| <strong style=\"color: #fff;\">"));
+          webClient2.print(String(PulseToMetterBySecond(PeriodMinRpmPulse)));
+          webClient2.print(F(" m/s</strong></span><br><span style=\"font-size: 600%; transform: rotate("));
+          webClient2.print(String(WindDir));
+          webClient2.print(F("deg); display: inline-block;\">&#10138;</span><br><span style=\"color: #666;\">UTC "));
+          webClient2.print(UtcTime(1));
+          webClient2.println(F("</span></p></body></html>"));
+
+          if(EnableSerialDebug>0){
+            Serial.print(HTTP_req);
+          }
+          HTTP_req = "";
+
+          break;
+        }
+        if (c == '\n') {
+          // you're starting a new line
+          currentLineIsBlank = true;
+          // if (strstr(linebuf,"GET /h0 ") > 0){digitalWrite(GPIOS[0], HIGH);}else if (strstr(linebuf,"GET /l0 ") > 0){digitalWrite(GPIOS[0], LOW);}
+          // else if (strstr(linebuf,"GET /h1 ") > 0){digitalWrite(GPIOS[1], HIGH);}else if (strstr(linebuf,"GET /l1 ") > 0){digitalWrite(GPIOS[1], LOW);}
+
+          // you're starting a new line
+          currentLineIsBlank = true;
+          memset(linebuf,0,sizeof(linebuf));
+          charcount=0;
+        } else if (c != '\r') {
+          // you've gotten a character on the current line
+          currentLineIsBlank = false;
+        }
+      }
+    }
+    // give the web browser time to receive the data
+    delay(1);
+
+    // close the connection:
+    webClient2.stop();
+   if(EnableSerialDebug>0){
+     Serial.println("WIFI webClient2 disconnected");
      MeasureTimer[0]=millis()+5000-MeasureTimer[1];
    }
    Interrupts(true);
