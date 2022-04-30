@@ -104,7 +104,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 const char* ssid     = "";
 const char* password = "";
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20220429";
+const char* REV = "20220430";
 // unsigned long TimerTemp;
 
 // values
