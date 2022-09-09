@@ -34,6 +34,8 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20220715 - HW rev5
+
 20220429 - add html preview page on port 88
 20220307 - add wind direction shift settings for non North orientation, update for new lib
 20210513 - add enable support, RF module support by https://github.com/jarodan
@@ -62,6 +64,7 @@ ToDo
 - telnet inactivity to close
 - SD card log
 - clear code
+- https://github.com/Sensirion/arduino-sht
 
 Použití knihovny WiFi ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/WiFi
 Použití knihovny EEPROM ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/EEPROM
@@ -86,6 +89,8 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
+#define HW7                         // >>>SHT21, gpio13 1wire, gpio12 ETH/LoRa POWER
+#define HW5                         // SHT21, EnablePin (gpio13 sensors ON), gpio12 ETH_POWER also enable RF lora module
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
@@ -336,7 +341,7 @@ byte ShiftOutByte[3];
 const int RpmPin = 39;
 const int Rain1Pin = 36;
 const int Rain2Pin = 35;
-const int EnablePin = 13;
+// const int EnablePin = 13;
 // const int ButtonPin = 34;
 
 #if defined(Ser2net)
@@ -404,7 +409,7 @@ String AprsCoordinates;
   // const int DsPin = 3;
   // OneWire ds(DsPin);
   // DallasTemperature sensors(&ds);
-  const int oneWireBus = 3;
+  const int oneWireBus = 13;
   OneWire oneWire(oneWireBus);
   DallasTemperature sensors(&oneWire);
   bool ExtTemp = false;
@@ -423,8 +428,8 @@ void setup() {
   pinMode(RpmPin, INPUT);
   pinMode(Rain1Pin, INPUT);
   pinMode(Rain2Pin, INPUT);
-  pinMode(EnablePin, OUTPUT);
-  digitalWrite(EnablePin,1);
+  // pinMode(EnablePin, OUTPUT);
+  // digitalWrite(EnablePin,1);
 
   // pinMode(ButtonPin, INPUT);
   // SHIFT IN
@@ -837,7 +842,7 @@ void setup() {
   #endif
   //------------------------------------------------
 
-  digitalWrite(EnablePin,0);
+  // digitalWrite(EnablePin,0);
 
   // WDT
   esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
@@ -1114,7 +1119,7 @@ void AzShift(int AZ){
 void AprsWxIgate() {
   #if defined(BMP280) && defined(HTU21D)
   if(AprsON==true){
-    digitalWrite(EnablePin,1);
+    // digitalWrite(EnablePin,1);
     if (!AprsClient.connect(aprs_server_ip, AprsPort)) {
       if(EnableSerialDebug>0){
         Prn(3, 1,"APRS client connect failed!");
@@ -1181,7 +1186,7 @@ void AprsWxIgate() {
     }
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
 
-    digitalWrite(EnablePin,0);
+    // digitalWrite(EnablePin,0);
   }
   #endif
 }
@@ -1330,7 +1335,7 @@ void Watchdog(){
 
   // Rain counter 5sec
   if(millis()-RainTimer[0]>RainTimer[1]){
-    digitalWrite(EnablePin,1);
+    // digitalWrite(EnablePin,1);
     if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
       if(RainStatus==true){
         #if defined(HTU21D)
@@ -1365,13 +1370,13 @@ void Watchdog(){
     if(RainCountDayOfMonth=="n/a"){
       RainCountDayOfMonth=UtcTime(2);
     }
-    digitalWrite(EnablePin,0);
+    // digitalWrite(EnablePin,0);
   }
 
   // Half hour
   if(millis()-MeasureTimer[0]>MeasureTimer[1] && eth_connected==true && mqttClient.connected()==true){
     Interrupts(false);
-    digitalWrite(EnablePin,1);
+    // digitalWrite(EnablePin,1);
     if(UtcTime(2)!=RainCountDayOfMonth){
       RainCount=0;
       RainCountDayOfMonth=UtcTime(2);
@@ -1438,7 +1443,7 @@ void Watchdog(){
     // appendFile(SD_MMC, "/wx-"+String(UtcTime(3))+".txt", UtcTime(1) );
     MeasureTimer[0]=millis();
     Interrupts(true);
-    digitalWrite(EnablePin,0);
+    // digitalWrite(EnablePin,0);
   }
 
   if(needEEPROMcommit==true){
@@ -2492,7 +2497,7 @@ void Prn(int OUT, int LN, String STR){
 
 //-------------------------------------------------------------------------------------------------------
 void ListCommands(int OUT){
-  digitalWrite(EnablePin,1);
+  // digitalWrite(EnablePin,1);
   if(OUT==0){
     Prn(OUT, 1,"");
     Prn(OUT, 1,"");
@@ -2891,7 +2896,7 @@ void ListCommands(int OUT){
     Prn(OUT, 1,"---------------------------------------------");
     Prn(OUT, 1, "" );
   }
-  digitalWrite(EnablePin,0);
+  // digitalWrite(EnablePin,0);
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -4214,7 +4219,7 @@ void MqttRx(char *topic, byte *payload, unsigned int length) {
         Prn(3, 1, "/get ");
       }
       Interrupts(false);
-      digitalWrite(EnablePin,1);
+      // digitalWrite(EnablePin,1);
 
       Azimuth();
       MqttPubString("WindDir-azimuth", String(WindDir), false);
@@ -4252,7 +4257,7 @@ void MqttRx(char *topic, byte *payload, unsigned int length) {
       #endif
 
       Interrupts(true);
-      digitalWrite(EnablePin,0);
+      // digitalWrite(EnablePin,0);
     }
 
 } // MqttRx END
