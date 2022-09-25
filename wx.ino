@@ -34,8 +34,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
-20220715 - HW rev5
-
+20220910 - HW rev5, DS18B20 autodetect,
 20220429 - add html preview page on port 88
 20220307 - add wind direction shift settings for non North orientation, update for new lib
 20210513 - add enable support, RF module support by https://github.com/jarodan
@@ -95,6 +94,8 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
 #define HTU21D                      // humidity I2C sensor
+// #define SHT21                       // humidity I2C sensor
+// #define SHT                         // general SHT sensors I2C sensor https://github.com/Sensirion/arduino-sht/blob/master/examples/multiple-sht-sensors/multiple-sht-sensors.ino
 // #define RF69_EXTERNAL_SENSOR        // RX temp and humidity radio sensor RF69
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
 #define ETH_ADDR 0
@@ -108,32 +109,41 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 // #define WIFI                     // Enable ESP32 WIFI (DHCP IPv4) - NOT TESTED
 const char* ssid     = "";
 const char* password = "";
+const float FunelDiaInCM = 10.0; // cm funnel diameter
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20220430";
+const char* REV = "20220925";
 // unsigned long TimerTemp;
+
+// interrupts
+#include "esp_attr.h"
 
 // values
 const int keyNumber = 1;
 char key[100];
 String YOUR_CALL = "";
-long MeasureTimer[2]={2800000,1800000};   //  1/2 hour
+long MeasureTimer[2]={2800000,300000};   //  millis,timer (5 min)
 long RainTimer[2]={0,5000};   //  <---------------- rain timing
 int RainCount;
 String RainCountDayOfMonth;
 bool RainStatus;
-float mmInPulse = 0.154;        // rain mm in one rain pulse
+/*
+1mm rain = 15,7cm^2/10 = 1,57ml     <- by rain funnel radius
+10ml = 11,5 pulses = 0,87ml/pulse   <- constanta tilting measuring cup
+*/
+float mmInPulse = 0.87/(3.14*(FunelDiaInCM/2)*(FunelDiaInCM/2)/10); // rain mm, in one pulse
 
 int WindDir = 0;
 unsigned int WindDirShift = 0;
 
 long RpmTimer[2]={0,3000};
-long RpmPulse = 0;
+long RpmPulse = 987654321;
 long PeriodMinRpmPulse = 987654321;
 String PeriodMinRpmPulseTimestamp;
 long MinRpmPulse;
 String MinRpmPulseTimestamp;
 unsigned int RpmSpeed = 0;
-unsigned long RpmAverage[2]={1,0};
+unsigned long RpmAverage[2]={1,0};  // counter,sum time
+bool RpmInterrupt = false;
 
 int SpeedAlertLimit_ms = 0;
 int SpeedAlert_ms = 3000;
@@ -293,7 +303,7 @@ byte ShiftOutByte[3];
 #define I2C_SDA 33
 #define I2C_SCL 32
 
-#if defined(BMP280)||defined(HTU21D)
+#if defined(BMP280)||defined(HTU21D)||defined(SHT21)
   // #include <SPI.h>
   #include <Adafruit_Sensor.h>
   TwoWire I2Cone = TwoWire(0);
@@ -311,6 +321,22 @@ byte ShiftOutByte[3];
   #include "Adafruit_HTU21DF.h"
   Adafruit_HTU21DF htu = Adafruit_HTU21DF();
   bool HTU21Denable;
+#endif
+
+#if defined(SHT21)
+  #include "SHT2x.h"
+  SHT2x internal;
+  // SHT2x external;
+#endif
+
+#if defined(SHT)
+  #include "SHTSensor.h"
+  // Sensor with normal i2c address
+  // Sensor 1 with address pin pulled to GND
+  SHTSensor sht1(SHTSensor::SHT3X);
+  // Sensor with alternative i2c address
+  // Sensor 2 with address pin pulled to Vdd
+  // SHTSensor sht2(SHTSensor::SHT3X_ALT);
 #endif
 
 // https://github.com/PaulStoffregen/RadioHead
@@ -361,10 +387,10 @@ const long mapping[MappingRow][2] = { // ms > m/s
 // WX end
 
 // SD
-#define ETH_CLK_MODE ETH_CLOCK_GPIO17_OUT
-#define ETH_PHY_POWER 12
-#include "FS.h"
-#include "SD_MMC.h"
+// #define ETH_CLK_MODE ETH_CLOCK_GPIO17_OUT
+// #define ETH_PHY_POWER 12
+// #include "FS.h"
+// #include "SD_MMC.h"
 
 // ntp
 #include "time.h"
@@ -404,24 +430,40 @@ String AprsCoordinates;
 
 // DS18B20
 #if defined(DS18B20)
+  // #include <OneWire.h>
+  // #include <DallasTemperature.h>
+  // // const int DsPin = 3;
+  // // OneWire ds(DsPin);
+  // // DallasTemperature sensors(&ds);
+  // const int oneWireBus = 13;
+  // OneWire oneWire(oneWireBus);
+  // DallasTemperature sensors(&oneWire);
+  bool ExtTemp = true;
+
+  // Include the libraries we need
   #include <OneWire.h>
   #include <DallasTemperature.h>
-  // const int DsPin = 3;
-  // OneWire ds(DsPin);
-  // DallasTemperature sensors(&ds);
-  const int oneWireBus = 13;
-  OneWire oneWire(oneWireBus);
+  // Data wire is plugged into port 2 on the Arduino
+  #define ONE_WIRE_BUS 13 //2
+  #define TEMPERATURE_PRECISION 9 // 9-12
+  // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
+  OneWire oneWire(ONE_WIRE_BUS);
+  // Pass our oneWire reference to Dallas Temperature.
   DallasTemperature sensors(&oneWire);
-  bool ExtTemp = false;
+  // arrays to hold device addresses
+  DeviceAddress insideThermometer, outsideThermometer;
+  // Assign address manually. The addresses below will need to be changed
+  // to valid device addresses on your bus. Device address can be retrieved
+  // by using either oneWire.search(deviceAddress) or individually via
+  // sensors.getAddress(deviceAddress, index)
+  // DeviceAddress insideThermometer = { 0x28, 0x1D, 0x39, 0x31, 0x2, 0x0, 0x0, 0xF0 };
+  // DeviceAddress outsideThermometer   = { 0x28, 0x3F, 0x1C, 0x31, 0x2, 0x0, 0x0, 0x2 };
+
 #endif
 
 //-------------------------------------------------------------------------------------------------------
 
 void setup() {
-  #if defined(DS18B20)
-    sensors.begin();
-  #endif
-
   // for (int i = 0; i < 8; i++) {
   //   pinMode(TestPin[i], INPUT);
   // }
@@ -441,6 +483,67 @@ void setup() {
   while(!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
   }
+
+  #if defined(DS18B20)
+    sensors.begin();
+
+    // locate devices on the bus
+    Serial.print("DS18B20 found ");
+    Serial.print(sensors.getDeviceCount(), DEC);
+    Serial.println(" devices.");
+
+    // report parasite power requirements
+    //  Serial.print("Parasite power is: ");
+    //  if (sensors.isParasitePowerMode()) Serial.println("ON");
+    //  else Serial.println("OFF");
+
+    // Search for devices on the bus and assign based on an index. Ideally,
+    // you would do this to initially discover addresses on the bus and then
+    // use those addresses and manually assign them (see above) once you know
+    // the devices on your bus (and assuming they don't change).
+    //
+    // method 1: by index
+    if (!sensors.getAddress(insideThermometer, 0)){
+      ExtTemp = false;
+      Serial.println("DS18B20 unable to find address for Device 0");
+    }
+    //  if (!sensors.getAddress(outsideThermometer, 1)) Serial.println("Unable to find address for Device 1");
+
+    // method 2: search()
+    // search() looks for the next device. Returns 1 if a new address has been
+    // returned. A zero might mean that the bus is shorted, there are no devices,
+    // or you have already retrieved all of them. It might be a good idea to
+    // check the CRC to make sure you didn't get garbage. The order is
+    // deterministic. You will always get the same devices in the same order
+    //
+    // Must be called before search()
+    //oneWire.reset_search();
+    // assigns the first address found to insideThermometer
+    //if (!oneWire.search(insideThermometer)) Serial.println("Unable to find address for insideThermometer");
+    // assigns the seconds address found to outsideThermometer
+    //if (!oneWire.search(outsideThermometer)) Serial.println("Unable to find address for outsideThermometer");
+
+    // show the addresses we found on the bus
+    Serial.print("DS18B20 device 0 Address: ");
+    printAddress(insideThermometer);
+    Serial.println();
+
+    //  Serial.print("Device 1 Address: ");
+    //  printAddress(outsideThermometer);
+    //  Serial.println();
+
+    // set the resolution to 9 bit per device
+    sensors.setResolution(insideThermometer, TEMPERATURE_PRECISION);
+    //  sensors.setResolution(outsideThermometer, TEMPERATURE_PRECISION);
+
+    Serial.print("DS18B20 device 0 Resolution: ");
+    Serial.print(sensors.getResolution(insideThermometer), DEC);
+    Serial.println();
+
+    //  Serial.print("Device 1 Resolution: ");
+    //  Serial.print(sensors.getResolution(outsideThermometer), DEC);
+    //  Serial.println();
+  #endif
 
   #if defined(BMP280)
     // I2Cone.begin(0x76, I2C_SDA, I2C_SCL, 100000); // SDA pin, SCL pin, 100kHz frequency
@@ -463,8 +566,10 @@ void setup() {
     }
   #endif
 
-  #if defined(HTU21D)
+  #if defined(HTU21D) || defined(SHT)
     Wire.begin(I2C_SDA, I2C_SCL);
+  #endif
+  #if defined(HTU21D)
     Serial.print("HTU21D sensor init ");
     if(!htu.begin()){
       Serial.println("failed!");
@@ -476,15 +581,32 @@ void setup() {
     }
   #endif
 
+  #if defined(SHT21)
+    Serial.println(__FILE__);
+    Serial.print("SHT2x_LIB_VERSION: \t");
+    Serial.println(SHT2x_LIB_VERSION);
+
+    internal.begin(&I2Cone);
+    // external.begin(&I2Ctwo);
+
+    uint8_t stat = internal.getStatus();
+    Serial.print(stat, HEX);
+    Serial.println();
+    // stat = external.getStatus();
+    // Serial.print(stat, HEX);
+    // Serial.println();
+    Serial.println();
+  #endif
+
   #if !defined(BMP280) && !defined(HTU21D)
     Wire.begin(I2C_SDA, I2C_SCL);
   #endif
 
-  // SD
-  if(!SD_MMC.begin()){
-    Serial.println("SD card Mount Failed");
-    // return;
-  }
+  // // SD
+  // if(!SD_MMC.begin()){
+  //   Serial.println("SD card Mount Failed");
+  //   // return;
+  // }
 
   // Listen source
   if (!EEPROM.begin(EEPROM_SIZE)){
@@ -898,6 +1020,33 @@ void loop() {
 }
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
 
+void IRAM_ATTR RPMcount(){    // must be before attachInterrupt ;)
+  // Interrupts(false);
+  if(digitalRead(RpmPin)==0){   // because FALLING not work
+    // Serial.println("RPM");
+    RpmPulse = millis()-RpmTimer[0];
+    RpmTimer[0] = millis();
+    // Prn(3, 0,"*");
+    RpmInterrupt = true;
+    // if(RpmPulse<PeriodMinRpmPulse){
+    //   PeriodMinRpmPulse=RpmPulse;
+    //   PeriodMinRpmPulseTimestamp=UtcTime(1);
+    // }
+    // if(RpmPulse<MinRpmPulse && needEEPROMcommit==false){
+    //   MinRpmPulseTimestamp=PeriodMinRpmPulseTimestamp;
+    //   EEPROM.writeLong(169, RpmPulse);
+    //   EEPROM.writeString(173, MinRpmPulseTimestamp);
+    //   MinRpmPulse=RpmPulse;
+    //   needEEPROMcommit = true;
+    // }
+    // if(RpmPulse<RpmTimer[1]){
+    //   RpmAverage[1]=RpmAverage[1]+RpmPulse;
+    //   RpmAverage[0]++;
+    // }
+  }
+  // Interrupts(true);
+}
+//-------------------------------------------------------------------------------------------------------
 void Interrupts(boolean ON){
   if(ON==true){
     attachInterrupt(RpmPin, RPMcount, FALLING);
@@ -906,6 +1055,231 @@ void Interrupts(boolean ON){
   }else{
     detachInterrupt(digitalPinToInterrupt(RpmPin));
   }
+}
+//-------------------------------------------------------------------------------------------------------
+void Watchdog(){
+
+  // RPM - move from interrupt RPMcount() where it triggered a reset
+  if(RpmInterrupt==true){
+    if(RpmPulse<10){ // 300km/h max limit
+      RpmPulse=987654321;
+    }
+    if(RpmPulse<PeriodMinRpmPulse){
+      PeriodMinRpmPulse=RpmPulse;
+      PeriodMinRpmPulseTimestamp=UtcTime(1);
+      // Prn(3, 0,"1");
+    }
+    if(RpmPulse<MinRpmPulse && needEEPROMcommit==false){
+      MinRpmPulseTimestamp=PeriodMinRpmPulseTimestamp;
+      EEPROM.writeLong(169, RpmPulse);
+      EEPROM.writeString(173, MinRpmPulseTimestamp);
+      MinRpmPulse=RpmPulse;
+      needEEPROMcommit = true;
+      // Prn(3, 0,"2");
+    }
+    if(RpmPulse<RpmTimer[1]){
+      RpmAverage[1]=RpmAverage[1]+RpmPulse;
+      RpmAverage[0]++;
+      // Prn(3, 0,"3");
+    }
+    if(needEEPROMcommit==true){
+      Interrupts(false);
+      needEEPROMcommit = false;
+      EEPROM.commit();
+      MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), true);
+      MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
+      Interrupts(true);
+      // Prn(3, 1,"4");
+    }
+    RpmInterrupt = false;
+  }
+
+
+  // WDT
+  if(millis()-WdtTimer > 60000){
+    esp_task_wdt_reset();
+    WdtTimer=millis();
+    if(EnableSerialDebug>0){
+      Prn(3, 0,"WDT reset ");
+      Prn(3, 1, UtcTime(1));
+    }
+  }
+
+  // frenetic mode
+  if(EnableSerialDebug>1 && millis()-FreneticModeTimer > 1000){
+    Azimuth();
+    Prn(3, 1, "  Wind speed az/last/avg/max "+String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h");
+    if(eth_connected==true && mqttClient.connected()==true){
+      MqttPubString("WindSpeed_az/last/avg/max", String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h", false);
+    }
+    FreneticModeTimer=millis();
+  }
+
+  // if(NeedSpeedAlert_ms==true){
+  //   NeedSpeedAlert_ms=false;
+  //   MqttPubString("SpeedAlert-mps", String(PulseToMetterBySecond(RpmPulse)), false);
+  //   Azimuth();
+  //   MqttPubString("SpeedAlert-az", String(WindDir), false);
+  // }
+
+  if(RebootWatchdog > 0 && millis()-WatchdogTimer > RebootWatchdog*60000){
+    Prn(3, 1,"** Activate reboot watchdog - IP switch will be restarted **");
+    EEPROM.writeByte(34, ShiftOutByte[0]);
+    EEPROM.writeByte(35, ShiftOutByte[1]);
+    EEPROM.writeByte(36, ShiftOutByte[2]);
+    EEPROM.commit();
+    delay(1000);
+    TelnetServerClients[0].stop();
+    ESP.restart();
+  }
+
+  if(OutputWatchdog > 0 && millis()-WatchdogTimer > OutputWatchdog*60000 && OutputWatchdog < 123456){
+    Prn(3, 1,"** Activate clear output watchdog **");
+    ShiftOutByte[0]=0x00;
+    ShiftOutByte[1]=0x00;
+    ShiftOutByte[2]=0x00;
+    EEPROM.writeByte(34, ShiftOutByte[0]);
+    EEPROM.writeByte(35, ShiftOutByte[1]);
+    EEPROM.writeByte(36, ShiftOutByte[2]);
+    EEPROM.commit();
+    #if defined(ShiftOut)
+      // digitalWrite(ShiftOutLatchPin, LOW);  // když dáme latchPin na LOW mužeme do registru poslat data
+      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, 0x01);
+      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[2]);
+      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[1]);
+      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[0]);
+      // digitalWrite(ShiftOutLatchPin, HIGH);    // jakmile dáme latchPin na HIGH data se objeví na výstupu
+    #endif
+    // deactivate
+    OutputWatchdog=123456;
+  }
+
+  // if(millis()-HeartBeatTimer[0]>HeartBeatTimer[1]){
+  //   MqttPubString("HeartBeat", String(UtcTime(1)), false);
+  //   // MqttPubString("WindDir", String(WindDir), false);
+  //   HeartBeatTimer[0]=millis();
+  // }
+
+  // Rain counter 5sec
+  if(millis()-RainTimer[0]>RainTimer[1]){
+    if(EnableSerialDebug>1){Prn(3, 1,"*RainStatus "+String(RainStatus)+"|RainCount "+String(RainCount)+"|"+String(UtcTime(1)));}
+
+    // digitalWrite(EnablePin,1);
+    if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
+      if(RainStatus==true){
+        // #if defined(HTU21D)
+        //   if(HTU21Denable==true){
+        //     // debouncing
+        //     if(htu.readHumidity()>90){
+              RainCount++;
+              MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+              MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
+        //     }
+        //   }
+        // #endif
+        RainStatus=false;
+      }
+    }else if(digitalRead(Rain1Pin)==1 && digitalRead(Rain2Pin)==0){
+      if(RainStatus==false){
+        // #if defined(HTU21D)
+        //   if(HTU21Denable==true){
+        //     // debouncing
+        //     if(htu.readHumidity()>90){
+              RainCount++;
+              MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+              MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
+        //     }
+        //   }
+        // #endif
+        RainStatus=true;
+      }
+    }
+    RainTimer[0]=millis();
+
+    if(RainCountDayOfMonth=="n/a"){
+      RainCountDayOfMonth=UtcTime(2);
+    }
+    // digitalWrite(EnablePin,0);
+  }
+
+  // TX repeat time
+  if(millis()-MeasureTimer[0]>MeasureTimer[1] && eth_connected==true && mqttClient.connected()==true){
+    Interrupts(false);
+    // digitalWrite(EnablePin,1);
+    if(UtcTime(2)!=RainCountDayOfMonth){
+      RainCount=0;
+      RainCountDayOfMonth=UtcTime(2);
+    }
+    String StringUtc1 = UtcTime(1);
+    MqttPubString("utc", StringUtc1, false);
+    Azimuth();
+    MqttPubString("WindDir-azimuth", String(WindDir), false);
+
+    // MqttPubString("WindSpeedLast", String(RpmPulse)+" "+StringUtc1, false);
+    MqttPubString("WindSpeedAvg-mps", String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])), false);
+    if(PeriodMinRpmPulse<987654321){
+      MqttPubString("WindSpeedMaxPeriod-mps", String(PulseToMetterBySecond(PeriodMinRpmPulse)), false);
+      MqttPubString("WindSpeedMaxPeriod-utc", String(PeriodMinRpmPulseTimestamp), false);
+    }
+    // MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), true);
+    // MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
+
+    #if defined(BMP280)
+      if(BMP280enable==true){
+        MqttPubString("Pressure-hPa-BMP280", String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100), false);
+        MqttPubString("TemperatureBak-Celsius-BMP280", String(bmp.readTemperature()), false);
+      }else{
+        MqttPubString("Pressure-hPa-BMP280", "n/a", false);
+        // MqttPubString("TemperatureBak-Celsius", "n/a", false);
+      }
+    #endif
+    #if defined(HTU21D)
+      if(HTU21Denable==true){
+        MqttPubString("HumidityRel-Percent-HTU21D", String(constrain(htu.readHumidity(), 0, 100)), false);
+        MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()), false);
+      }else{
+        MqttPubString("HumidityRel-Percent-HTU21D", "n/a", false);
+        // MqttPubString("Temperature-Celsius", "n/a", false);
+      }
+    #endif
+    #if defined(DS18B20)
+      if(ExtTemp==true){
+        sensors.requestTemperatures();
+        // float temperatureC = sensors.getTempCByIndex(0);
+        float temperatureC = sensors.getTempC(insideThermometer);
+        MqttPubString("Temperature-Celsius-DS18B20", String(temperatureC), false);
+      }else{
+        MqttPubString("Temperature-Celsius-DS18B20", "n/a", false);
+        // MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()), false);
+      }
+    #endif
+
+    #if defined(RF69_EXTERNAL_SENSOR)
+      if(temp_radio.toInt()>0 && humidity_radio.toInt()>0 && vbat_radio.toInt()>0 && RF69enable==true){
+        MqttPubString("RF-Temperature-Celsius", temp_radio, false);
+        MqttPubString("RF-HumidityRel-Percent", humidity_radio, false);
+        MqttPubString("RF-BattVoltage", vbat_radio, false);
+      }
+    #endif
+
+    AprsWxIgate();
+
+    RpmAverage[0]=1;
+    RpmAverage[1]=0;
+    PeriodMinRpmPulse=987654321;
+    PeriodMinRpmPulseTimestamp="";
+
+    // writeFile(SD_MMC, "/hello.txt", "Hello ");
+    // appendFile(SD_MMC, "/wx-"+String(UtcTime(3))+".txt", UtcTime(1) );
+    MeasureTimer[0]=millis();
+    Interrupts(true);
+    // digitalWrite(EnablePin,0);
+  }
+
+  if(!TelnetServerClients[0].connected() && FirstListCommands==false){
+    FirstListCommands=true;
+  }
+
 }
 
 //----------------------------RADIO--------------------------------------------------------------------
@@ -967,32 +1341,6 @@ double Babinet(double Pz, double T){
 //-------------------------------------------------------------------------------------------------------
 // ToDo
 // https://techtutorialsx.com/2017/10/07/esp32-arduino-timer-interrupts/
-void RPMcount(){
-  Interrupts(false);
-  if(digitalRead(RpmPin)==0){   // because FALLING not work
-    RpmPulse = millis()-RpmTimer[0];
-    RpmTimer[0] = millis();
-
-    if(RpmPulse<PeriodMinRpmPulse){
-      PeriodMinRpmPulse=RpmPulse;
-      PeriodMinRpmPulseTimestamp=UtcTime(1);
-    }
-    if(RpmPulse<MinRpmPulse && needEEPROMcommit==false){
-      // MinRpmPulseTimestamp=UtcTime(1);
-      MinRpmPulseTimestamp=PeriodMinRpmPulseTimestamp;
-      EEPROM.writeLong(169, RpmPulse);
-      EEPROM.writeString(173, MinRpmPulseTimestamp);
-      MinRpmPulse=RpmPulse;
-      needEEPROMcommit = true;
-    }
-    if(RpmPulse<RpmTimer[1]){
-      RpmAverage[1]=RpmAverage[1]+RpmPulse;
-      RpmAverage[0]++;
-    }
-  }
-  Interrupts(true);
-}
-//-------------------------------------------------------------------------------------------------------
 int MpsToMs(int MPS){
   if(MPS>0){
     int ms;
@@ -1050,52 +1398,52 @@ byte Azimuth(){    // run from interrupt
   }
   switch (rxShiftInByte){
     case 0b01111111:
-      AzShift(0);
+      AzShift(180); // 0
       break;
     case 0b01111110:
-      AzShift(22);
+      AzShift(202); // 22
       break;
     case 0b11111110:
-      AzShift(45);
+      AzShift(225); // 45
       break;
     case 0b11111100:
-      AzShift(67);
+      AzShift(247); // 67
       break;
     case 0b11111101:
-      AzShift(90);
+      AzShift(270); // 90
       break;
     case 0b11111001:
-      AzShift(112);
+      AzShift(292); // 112
       break;
     case 0b11111011:
-      AzShift(135);
+      AzShift(315); // 135
       break;
     case 0b11110011:
-      AzShift(157);
+      AzShift(337); // 157
       break;
     case 0b11110111:
-      AzShift(180);
+      AzShift(0); // 180
       break;
     case 0b11100111:
-      AzShift(202);
+      AzShift(22);
       break;
     case 0b11101111:
-      AzShift(225);
+      AzShift(45);
       break;
     case 0b11001111:
-      AzShift(247);
+      AzShift(67);
       break;
     case 0b11011111:
-      AzShift(270);
+      AzShift(90);
       break;
     case 0b10011111:
-      AzShift(292);
+      AzShift(112);
       break;
     case 0b10111111:
-      AzShift(315);
+      AzShift(135);
       break;
     case 0b00111111:
-      AzShift(337);
+      AzShift(157);
       break;
     default:
       WindDir=-1;
@@ -1120,7 +1468,9 @@ void AprsWxIgate() {
   #if defined(BMP280) && defined(HTU21D)
   if(AprsON==true){
     // digitalWrite(EnablePin,1);
-    if (!AprsClient.connect(aprs_server_ip, AprsPort)) {
+    // http://czech.aprs2.net:14501/
+    // if (!AprsClient.connect(aprs_server_ip, AprsPort))
+    if (!AprsClient.connect("czech.aprs2.net", 14580)) {  // client.connect(URL, port);  char URL[]="google.com"
       if(EnableSerialDebug>0){
         Prn(3, 1,"APRS client connect failed!");
       }
@@ -1147,21 +1497,23 @@ void AprsWxIgate() {
       +"P"+LeadingZero(3,RainPulseToMM(RainCount)/0.254) );
     }
     String StrBuf;
-    StrBuf=LeadingZero(3,htu.readTemperature()*1.8+32);
+    // StrBuf=LeadingZero(3,htu.readTemperature()*1.8+32);
+    StrBuf=LeadingZero(3,bmp.readTemperature()*1.8+32);
 
-    #if defined(DS18B20)
-      if(ExtTemp==true){
-        sensors.requestTemperatures();
-        float temperatureF = sensors.getTempFByIndex(0);
-        StrBuf=LeadingZero(3,temperatureF);
-      }
-    #endif
-
-    #if defined(RF69_EXTERNAL_SENSOR)
-      if(temp_radio.toInt()>0 && RF69enable==true){
-        StrBuf=LeadingZero(3,temp_radio.toInt()*1.8+32);
-      }
-    #endif
+    // #if defined(DS18B20)
+    //   if(ExtTemp==true){
+    //     sensors.requestTemperatures();
+    //     // float temperatureF = sensors.getTempFByIndex(0);
+    //     float temperatureF = sensors.getTempC(insideThermometer);
+    //     StrBuf=LeadingZero(3,temperatureF*1.8+32);
+    //   }
+    // #endif
+    //
+    // #if defined(RF69_EXTERNAL_SENSOR)
+    //   if(temp_radio.toInt()>0 && RF69enable==true){
+    //     StrBuf=LeadingZero(3,temp_radio.toInt()*1.8+32);
+    //   }
+    // #endif
 
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAS,:="
     +AprsCoordinates+"_"
@@ -1204,45 +1556,45 @@ String LeadingZero(int NumberOfZero, int NR){
 }
 
 //-------------------------------------------------------------------------------------------------------
-void Print_SDCard_Info ()
-{
-    uint8_t cardType = SD_MMC.cardType();
-
-    if(cardType == CARD_NONE){
-        Serial.println("No SD_MMC card attached");
-        return;
-    }
-
-    Serial.print("SD_MMC Card Type: ");
-    if(cardType == CARD_MMC){
-        Serial.println("MMC");
-    } else if(cardType == CARD_SD){
-        Serial.println("SDSC");
-    } else if(cardType == CARD_SDHC){
-        Serial.println("SDHC");
-    } else {
-        Serial.println("UNKNOWN");
-    }
-
-    uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
-    Serial.printf("SD_MMC Card Size: %lluMB\n", cardSize);
-
-    listDir(SD_MMC, "/", 0);
-    createDir(SD_MMC, "/mydir");
-    listDir(SD_MMC, "/", 0);
-    removeDir(SD_MMC, "/mydir");
-    listDir(SD_MMC, "/", 2);
-    writeFile(SD_MMC, "/hello.txt", "Hello ");
-    appendFile(SD_MMC, "/hello.txt", "World!\n");
-    readFile(SD_MMC, "/hello.txt");
-    deleteFile(SD_MMC, "/foo.txt");
-    renameFile(SD_MMC, "/hello.txt", "/foo.txt");
-    readFile(SD_MMC, "/foo.txt");
-    testFileIO(SD_MMC, "/test.txt");
-    Serial.printf("Total space: %lluMB\n", SD_MMC.totalBytes() / (1024 * 1024));
-    Serial.printf("Used space: %lluMB\n", SD_MMC.usedBytes() / (1024 * 1024));
-
-}
+// void Print_SDCard_Info ()
+// {
+//     uint8_t cardType = SD_MMC.cardType();
+//
+//     if(cardType == CARD_NONE){
+//         Serial.println("No SD_MMC card attached");
+//         return;
+//     }
+//
+//     Serial.print("SD_MMC Card Type: ");
+//     if(cardType == CARD_MMC){
+//         Serial.println("MMC");
+//     } else if(cardType == CARD_SD){
+//         Serial.println("SDSC");
+//     } else if(cardType == CARD_SDHC){
+//         Serial.println("SDHC");
+//     } else {
+//         Serial.println("UNKNOWN");
+//     }
+//
+//     uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+//     Serial.printf("SD_MMC Card Size: %lluMB\n", cardSize);
+//
+//     listDir(SD_MMC, "/", 0);
+//     createDir(SD_MMC, "/mydir");
+//     listDir(SD_MMC, "/", 0);
+//     removeDir(SD_MMC, "/mydir");
+//     listDir(SD_MMC, "/", 2);
+//     writeFile(SD_MMC, "/hello.txt", "Hello ");
+//     appendFile(SD_MMC, "/hello.txt", "World!\n");
+//     readFile(SD_MMC, "/hello.txt");
+//     deleteFile(SD_MMC, "/foo.txt");
+//     renameFile(SD_MMC, "/hello.txt", "/foo.txt");
+//     readFile(SD_MMC, "/foo.txt");
+//     testFileIO(SD_MMC, "/test.txt");
+//     Serial.printf("Total space: %lluMB\n", SD_MMC.totalBytes() / (1024 * 1024));
+//     Serial.printf("Used space: %lluMB\n", SD_MMC.usedBytes() / (1024 * 1024));
+//
+// }
 //---------------------------------------------------------------------------------------------------------
 byte HiByte(int ID){
   bitClear(ID, 0);  // ->
@@ -1260,206 +1612,6 @@ byte LowByte(int ID){
   bitClear(ID, 6);
   bitClear(ID, 7);  // <-
   return(ID);
-}
-
-
-//-------------------------------------------------------------------------------------------------------
-void Watchdog(){
-
-  // WDT
-  if(millis()-WdtTimer > 60000){
-    esp_task_wdt_reset();
-    WdtTimer=millis();
-    if(EnableSerialDebug>0){
-      Prn(3, 0,"WDT reset ");
-      Prn(3, 1, UtcTime(1));
-    }
-  }
-
-  // frenetic mode
-  if(EnableSerialDebug>1 && millis()-FreneticModeTimer > 1000){
-    Azimuth();
-    Prn(3, 1, "  Wind speed az/last/avg/max "+String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h");
-    if(eth_connected==true && mqttClient.connected()==true){
-      MqttPubString("WindSpeed_az/last/avg/max", String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h", false);
-    }
-    FreneticModeTimer=millis();
-  }
-
-  // if(NeedSpeedAlert_ms==true){
-  //   NeedSpeedAlert_ms=false;
-  //   MqttPubString("SpeedAlert-mps", String(PulseToMetterBySecond(RpmPulse)), false);
-  //   Azimuth();
-  //   MqttPubString("SpeedAlert-az", String(WindDir), false);
-  // }
-
-  if(RebootWatchdog > 0 && millis()-WatchdogTimer > RebootWatchdog*60000){
-    Serial.println();
-    Serial.println("** Activate reboot watchdog - IP switch will be restarted **");
-    EEPROM.writeByte(34, ShiftOutByte[0]);
-    EEPROM.writeByte(35, ShiftOutByte[1]);
-    EEPROM.writeByte(36, ShiftOutByte[2]);
-    EEPROM.commit();
-    delay(1000);
-    TelnetServerClients[0].stop();
-    ESP.restart();
-  }
-
-  if(OutputWatchdog > 0 && millis()-WatchdogTimer > OutputWatchdog*60000 && OutputWatchdog < 123456){
-    Serial.println();
-    Serial.println("** Activate clear output watchdog **");
-    ShiftOutByte[0]=0x00;
-    ShiftOutByte[1]=0x00;
-    ShiftOutByte[2]=0x00;
-    EEPROM.writeByte(34, ShiftOutByte[0]);
-    EEPROM.writeByte(35, ShiftOutByte[1]);
-    EEPROM.writeByte(36, ShiftOutByte[2]);
-    EEPROM.commit();
-    #if defined(ShiftOut)
-      // digitalWrite(ShiftOutLatchPin, LOW);  // když dáme latchPin na LOW mužeme do registru poslat data
-      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, 0x01);
-      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[2]);
-      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[1]);
-      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[0]);
-      // digitalWrite(ShiftOutLatchPin, HIGH);    // jakmile dáme latchPin na HIGH data se objeví na výstupu
-    #endif
-    // deactivate
-    OutputWatchdog=123456;
-  }
-
-  // if(millis()-HeartBeatTimer[0]>HeartBeatTimer[1]){
-  //   MqttPubString("HeartBeat", String(UtcTime(1)), false);
-  //   // MqttPubString("WindDir", String(WindDir), false);
-  //   HeartBeatTimer[0]=millis();
-  // }
-
-  // Rain counter 5sec
-  if(millis()-RainTimer[0]>RainTimer[1]){
-    // digitalWrite(EnablePin,1);
-    if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
-      if(RainStatus==true){
-        #if defined(HTU21D)
-          if(HTU21Denable==true){
-            // debouncing
-            if(htu.readHumidity()>90){
-              RainCount++;
-              MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
-              MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
-            }
-          }
-        #endif
-        RainStatus=false;
-      }
-    }else if(digitalRead(Rain1Pin)==1 && digitalRead(Rain2Pin)==0){
-      if(RainStatus==false){
-        #if defined(HTU21D)
-          if(HTU21Denable==true){
-            // debouncing
-            if(htu.readHumidity()>90){
-              RainCount++;
-              MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
-              MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
-            }
-          }
-        #endif
-        RainStatus=true;
-      }
-    }
-    RainTimer[0]=millis();
-
-    if(RainCountDayOfMonth=="n/a"){
-      RainCountDayOfMonth=UtcTime(2);
-    }
-    // digitalWrite(EnablePin,0);
-  }
-
-  // Half hour
-  if(millis()-MeasureTimer[0]>MeasureTimer[1] && eth_connected==true && mqttClient.connected()==true){
-    Interrupts(false);
-    // digitalWrite(EnablePin,1);
-    if(UtcTime(2)!=RainCountDayOfMonth){
-      RainCount=0;
-      RainCountDayOfMonth=UtcTime(2);
-    }
-    String StringUtc1 = UtcTime(1);
-    MqttPubString("utc", StringUtc1, false);
-    Azimuth();
-    MqttPubString("WindDir-azimuth", String(WindDir), false);
-
-    // MqttPubString("WindSpeedLast", String(RpmPulse)+" "+StringUtc1, false);
-    MqttPubString("WindSpeedAvg-mps", String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])), false);
-    if(PeriodMinRpmPulse<987654321){
-      MqttPubString("WindSpeedMaxPeriod-mps", String(PulseToMetterBySecond(PeriodMinRpmPulse)), false);
-      MqttPubString("WindSpeedMaxPeriod-utc", String(PeriodMinRpmPulseTimestamp), false);
-    }
-    // MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), true);
-    // MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
-
-    #if defined(BMP280)
-      if(BMP280enable==true){
-        MqttPubString("Pressure-hPa", String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100), false);
-        // MqttPubString("TemperatureBak-Celsius", String(bmp.readTemperature()), false);
-      }else{
-        MqttPubString("Pressure-hPa", "n/a", false);
-        // MqttPubString("TemperatureBak-Celsius", "n/a", false);
-      }
-    #endif
-    #if defined(HTU21D)
-      if(HTU21Denable==true){
-        MqttPubString("HumidityRel-Percent", String(constrain(htu.readHumidity(), 0, 100)), false);
-        // MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
-      }else{
-        MqttPubString("HumidityRel-Percent", "n/a", false);
-        // MqttPubString("Temperature-Celsius", "n/a", false);
-      }
-    #endif
-    #if defined(DS18B20)
-      if(ExtTemp==true){
-        sensors.requestTemperatures();
-        float temperatureC = sensors.getTempCByIndex(0);
-        MqttPubString("Temperature-Celsius", String(temperatureC), false);
-      }else{
-        // MqttPubString("Temperature-Celsius", "n/a", false);
-        MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
-      }
-    #endif
-
-    #if defined(RF69_EXTERNAL_SENSOR)
-      if(temp_radio.toInt()>0 && humidity_radio.toInt()>0 && vbat_radio.toInt()>0 && RF69enable==true){
-        MqttPubString("RF-Temperature-Celsius", temp_radio, false);
-        MqttPubString("RF-HumidityRel-Percent", humidity_radio, false);
-        MqttPubString("RF-BattVoltage", vbat_radio, false);
-      }
-    #endif
-
-    AprsWxIgate();
-
-    RpmAverage[0]=1;
-    RpmAverage[1]=0;
-    PeriodMinRpmPulse=987654321;
-    PeriodMinRpmPulseTimestamp="";
-
-    // writeFile(SD_MMC, "/hello.txt", "Hello ");
-    // appendFile(SD_MMC, "/wx-"+String(UtcTime(3))+".txt", UtcTime(1) );
-    MeasureTimer[0]=millis();
-    Interrupts(true);
-    // digitalWrite(EnablePin,0);
-  }
-
-  if(needEEPROMcommit==true){
-    Interrupts(false);
-    needEEPROMcommit = false;
-    EEPROM.commit();
-    MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), true);
-    MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
-
-    Interrupts(true);
-  }
-
-  if(!TelnetServerClients[0].connected() && FirstListCommands==false){
-    FirstListCommands=true;
-  }
-
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -1614,7 +1766,7 @@ void CLI(){
 
     // e
   }else if(incomingByte==101){
-      Prn(OUT, 1,"List EEPROM");
+      Prn(OUT, 1,"List EEPROM [adr>value]");
       for (int i=0; i<EEPROM_SIZE; i++){
         Prn(OUT, 0, String(i));
         Prn(OUT, 0, ">" );
@@ -1949,9 +2101,9 @@ void CLI(){
     // }else if(incomingByte==82){
     //   readFile(SD_MMC, "/wx-"+String(UtcTime(3))+".txt");
 
-    // /
-    }else if(incomingByte==47){
-      listDir(SD_MMC, "/", 2);
+    // / dir
+    // }else if(incomingByte==47){
+    //   listDir(SD_MMC, "/", 2);
 
     #if !defined(BMP280) && !defined(HTU21D)
       // 2
@@ -2138,35 +2290,35 @@ void CLI(){
       }
       EEPROM.commit();
 
-  #if defined(DS18B20)
-  // s
-  }else if(incomingByte==115){
-    ExtTemp=!ExtTemp;
-      if(ExtTemp==true){
-        Prn(OUT, 1,"** External temp sensor ENABLE **");
-      }else{
-        Prn(OUT, 1,"** External temp sensor DISABLE **");
-      }
-        EEPROM.write(239, ExtTemp); // address, value
-        EEPROM.commit();
-
-    // s
-    // }else if(incomingByte==115){
-    //   Prn(OUT, 1,"  Input WX coordinates and press [enter] in format.");
-    // byte i;
-    // byte addr[8];
-    // if (!ds.search(addr)) {
-    //   Prn(OUT, 1,"  No more addresses.");
-    //   ds.reset_search();
-    //   delay(250);
-    //   return;
-    // }
-    // Prn(OUT, 0,"  ROM= ");
-    // for (i = 0; i < 8; i++) {
-    //   Prn(OUT, 0," ");
-    //   Prn(OUT, 0, String(addr[i], HEX));
-    // }
-  #endif
+  // #if defined(DS18B20)
+  // // s
+  // }else if(incomingByte==115){
+  //   ExtTemp=!ExtTemp;
+  //     if(ExtTemp==true){
+  //       Prn(OUT, 1,"** External temp sensor ENABLE **");
+  //     }else{
+  //       Prn(OUT, 1,"** External temp sensor DISABLE **");
+  //     }
+  //       EEPROM.write(239, ExtTemp); // address, value
+  //       EEPROM.commit();
+  //
+  //   // s
+  //   // }else if(incomingByte==115){
+  //   //   Prn(OUT, 1,"  Input WX coordinates and press [enter] in format.");
+  //   // byte i;
+  //   // byte addr[8];
+  //   // if (!ds.search(addr)) {
+  //   //   Prn(OUT, 1,"  No more addresses.");
+  //   //   ds.reset_search();
+  //   //   delay(250);
+  //   //   return;
+  //   // }
+  //   // Prn(OUT, 0,"  ROM= ");
+  //   // for (i = 0; i < 8; i++) {
+  //   //   Prn(OUT, 0," ");
+  //   //   Prn(OUT, 0, String(addr[i], HEX));
+  //   // }
+  // #endif
 
 // m
 }else if(incomingByte==109){
@@ -2229,15 +2381,20 @@ void CLI(){
     Prn(OUT, 1,"** Erase WindSpeedMax memory? [y/n] **");
     EnterChar(OUT);
     if(incomingByte==89 || incomingByte==121){
-      EEPROM.writeLong(169, 0); // 987654321
+      EEPROM.writeLong(169, 987654321);
+      EEPROM.writeByte(173, 255);
       EEPROM.commit();
-      MqttPubString("WindSpeedMax-mps", "0", true);
-      MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
+      MqttPubString("WindSpeedMax-mps", "", true);
+      MqttPubString("WindSpeedMax-utc", "", true);
+      Prn(OUT, 1,"** IP switch will be restarted **");
+      delay(1000);
+      TelnetServerClients[0].stop();
+      ESP.restart();
     }else{
       Prn(OUT, 1,"  bye");
     }
 
-  // a
+// a
 }else if(incomingByte==97){
     Prn(OUT, 0,"write limit for wind speed alert 0-60 m/s, and press [");
     if(TelnetAuthorized==true){
@@ -2368,7 +2525,7 @@ void Enter(){
 //-------------------------------------------------------------------------------------------------------
 void EnterChar(int OUT){
   incomingByte = 0;
-  Prn(OUT, 0,">");
+  Prn(OUT, 0," > ");
   if(OUT==0){
     while (Serial.available() == 0) {
       // Wait
@@ -2524,7 +2681,7 @@ void ListCommands(int OUT){
   else{
     #if defined(ETHERNET)
       Prn(OUT, 1,"");
-      Prn(OUT, 1,"------  WX station [ESP32-POE] status  ------");
+      Prn(OUT, 1,"------------  WX station status  ------------");
       Prn(OUT, 0,"  http://");
       Prn(OUT, 1, String(ETH.localIP()[0])+"."+String(ETH.localIP()[1])+"."+String(ETH.localIP()[2])+"."+String(ETH.localIP()[3]) );
       Prn(OUT, 0,"  ETH: MAC ");
@@ -2601,63 +2758,74 @@ void ListCommands(int OUT){
     Prn(OUT, 1, String(REV));
 
 
-    Prn(OUT, 0,"  micro SD card present: ");
-    uint8_t cardType = SD_MMC.cardType();
-
-    if(cardType == CARD_NONE){
-        Prn(OUT, 1,"none ");
-        // return;
-    }else if(cardType == CARD_MMC){
-        Prn(OUT, 1,"MMC ");
-    } else if(cardType == CARD_SD){
-        Prn(OUT, 1,"SDSC ");
-    } else if(cardType == CARD_SDHC){
-        Prn(OUT, 1,"SDHC ");
-    } else {
-        Prn(OUT, 1,"unknown ");
-    }
-
-    Prn(OUT, 0,"  RpmPin ");
-      Prn(OUT, 0,String(digitalRead(RpmPin)));
-    Prn(OUT, 0," | Rain1Pin ");
+    // Prn(OUT, 0,"  micro SD card present: ");
+    // uint8_t cardType = SD_MMC.cardType();
+    //
+    // if(cardType == CARD_NONE){
+    //     Prn(OUT, 1,"none ");
+    //     // return;
+    // }else if(cardType == CARD_MMC){
+    //     Prn(OUT, 1,"MMC ");
+    // } else if(cardType == CARD_SD){
+    //     Prn(OUT, 1,"SDSC ");
+    // } else if(cardType == CARD_SDHC){
+    //     Prn(OUT, 1,"SDHC ");
+    // } else {
+    //     Prn(OUT, 1,"unknown ");
+    // }
+    Prn(OUT, 1,"-----------------  Sensors  -----------------");
+    Prn(OUT, 0,"  Rain1Pin ");
       Prn(OUT, 0,String(digitalRead(Rain1Pin)));
-    Prn(OUT, 0," | Rain2Pin ");
-      Prn(OUT, 1,String(digitalRead(Rain2Pin)));
+    Prn(OUT, 0,"|Rain2Pin ");
+      Prn(OUT, 0,String(digitalRead(Rain2Pin)));
     // Prn(OUT, 0," | ButtonPin ");
     //   Prn(OUT, 1, String(digitalRead(ButtonPin)));
-    Prn(OUT, 1,"---------------------------------------------");
     if(digitalRead(Rain1Pin)==digitalRead(Rain2Pin)){
-      Prn(OUT, 1,"! Rain sensor malformed" );
+      Prn(OUT, 1,"|sensor malformed!" );
     }else{
-      Prn(OUT, 1,"  "+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+" | "+String(RainPulseToMM(RainCount))+"mm" );
+      Prn(OUT, 1,"|"+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+"|"+String(RainPulseToMM(RainCount))+"mm|"+String(mmInPulse)+" rain mm per pulse" );
     }
     // if(EnableSerialDebug>0){
     // }else{
     // }
     Azimuth();
-    Prn(3, 0,"  Azimuth ");
-    Prn(3, 1,String(Azimuth(),BIN));
+    Prn(3, 0,"  Wind direction ");
+    Prn(3, 0,String(Azimuth(),BIN));
     if(WindDir==-1){
-      Prn(OUT, 1,"! Wind direction sensor malformed" );
+      Prn(OUT, 1,"|sensor malformed!" );
     }else{
-      Prn(OUT, 1, "  Wind direction "+String(WindDir)+"° [with shift "+String(WindDirShift)+"°]");
+      Prn(OUT, 1, "|"+String(WindDir)+"° [with shift "+String(WindDirShift)+"°]");
     }
-    Prn(OUT, 1, "  Wind speed last "+String(RpmPulse)+"ms | "+String(PulseToMetterBySecond(RpmPulse))+"m/s | "+String(PulseToMetterBySecond(RpmPulse)*3.6)+" km/h");
-    Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+"ms | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+"m/s | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+" km/h");
-    Prn(OUT, 1, "             MAX in period "+String(PeriodMinRpmPulse)+"ms | "+String(PulseToMetterBySecond(PeriodMinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h ("+String(PeriodMinRpmPulseTimestamp)+")");
-    Prn(OUT, 1, "             lifetime MAX "+String(MinRpmPulse)+"ms | "+String(PulseToMetterBySecond(MinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(MinRpmPulse)*3.6)+" km/h ("+String(MinRpmPulseTimestamp)+")");
+    Prn(OUT, 0,"  RpmPin ");
+      Prn(OUT, 0,String(digitalRead(RpmPin)));
+    Prn(OUT, 1, "|Wind speed last   "+String(RpmPulse)+" ms|"+String(PulseToMetterBySecond(RpmPulse))+" m/s|"+String(PulseToMetterBySecond(RpmPulse)*3.6)+" km/h");
+    Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+" ms|"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+" m/s|"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+" km/h");
+    Prn(OUT, 1, "             MAX in period   "+String(PeriodMinRpmPulse)+" ms|"+String(PulseToMetterBySecond(PeriodMinRpmPulse))+" m/s|"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h("+String(PeriodMinRpmPulseTimestamp)+")");
+    Prn(OUT, 1, "             lifetime MAX    "+String(MinRpmPulse)+" ms|"+String(PulseToMetterBySecond(MinRpmPulse))+" m/s|"+String(PulseToMetterBySecond(MinRpmPulse)*3.6)+" km/h("+String(MinRpmPulseTimestamp)+")");
     #if defined(HTU21D)
       if(HTU21Denable==true){
-        Prn(OUT, 1, "  Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"% ["+String(htu.readTemperature())+"°C]");
+        Prn(OUT, 1, "  HTU21D Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"% ["+String(htu.readTemperature())+"°C]");
       }else{
-        Prn(OUT, 1, "  Humidity relative n/a");
+        Prn(OUT, 1, "  HTU21D Humidity relative n/a");
       }
+    #endif
+    #if defined(SHT21)
+      internal.read();
+      // external.read();
+      Serial.print("  SHT21 Humidity relative ");
+      Serial.print(internal.getTemperature(), 1);
+      Serial.print("\t");
+      Serial.println(internal.getHumidity(), 1);
+      // Serial.print("\t");
+      // Serial.print(external.getTemperature(), 1);
+      // Serial.print("\t");
+      // Serial.println(external.getHumidity(), 1);
     #endif
     #if defined(BMP280)
       if(BMP280enable==true){
-        Prn(OUT, 1, "  Pressure "+String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100)+" hPa ["+String(bmp.readPressure()/100)+" raw] "+String(bmp.readTemperature())+"°C");
+        Prn(OUT, 1, "  BMP280 Pressure "+String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100)+" hPa ["+String(bmp.readPressure()/100)+" raw] "+String(bmp.readTemperature())+"°C");
       }else{
-        Prn(OUT, 1, "  Pressure n/a");
+        Prn(OUT, 1, "  BMP280 Pressure n/a");
       }
     #endif
     #if defined(DS18B20)
@@ -2667,14 +2835,15 @@ void ListCommands(int OUT){
           Serial.end();
         }
         sensors.requestTemperatures();
-        float temperatureC = sensors.getTempCByIndex(0);
+        // float temperatureC = sensors.getTempCByIndex(0);
+        float temperatureC = sensors.getTempC(insideThermometer);
         if(OUT==0){
           Serial.begin(SERIAL_BAUDRATE);
           while(!Serial) {
             ; // wait for serial port to connect. Needed for native USB port only
           }
         }
-        Prn(OUT, 1, "  Temperature "+String(temperatureC)+"°C");
+        Prn(OUT, 1, "  DS18B20 Temperature "+String(temperatureC)+"°C");
       }
     #endif
     #if defined(RF69_EXTERNAL_SENSOR)
@@ -2689,7 +2858,7 @@ void ListCommands(int OUT){
     //   // Serial.printf("SD_MMC Card Size: %lluMB\n", cardSize);
     //   Prn(OUT, 1," | size "+String(printf("%lluMB", cardSize)));
     // }
-    Prn(OUT, 1,"---------------------------------------------");
+    Prn(OUT, 1,"------------------  Menu  -------------------");
     // Prn(OUT, 1,"  You can change source, with send character:");
     // if(TxUdpBuffer[2]=='m'){
     //   Prn(OUT, 0,"     [m]");
@@ -2727,17 +2896,17 @@ void ListCommands(int OUT){
     Prn(OUT, 0,"      S  Wind direction shift [");
     Prn(OUT, 1, String(WindDirShift)+"°]");
 
-    #if defined(DS18B20)
-      // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
-      Prn(OUT, 0,"      s  external temperature Sensor DS18B20 [O");
-        if(ExtTemp==true){
-          Prn(OUT, 1,"N]");
-        }else{
-          Prn(OUT, 1,"FF] CONNECT SENSOR (used inaccurate internal)");
-        }
-    #endif
-    Prn(OUT, 0,"      a  speed Alert [");
-    Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s] - not implemented");
+    // #if defined(DS18B20)
+    //   // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
+    //   Prn(OUT, 0,"      s  external temperature Sensor DS18B20 [O");
+    //     if(ExtTemp==true){
+    //       Prn(OUT, 1,"N]");
+    //     }else{
+    //       Prn(OUT, 1,"FF] CONNECT SENSOR (used inaccurate internal)");
+    //     }
+    // #endif
+    // Prn(OUT, 0,"      a  speed Alert [");
+    // Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s] - not implemented");
     if(TxUdpBuffer[2]!='n'){
       Prn(OUT, 0,"      w  inactivity reboot watchdog ");
       if(RebootWatchdog>0){
@@ -2847,12 +3016,7 @@ void ListCommands(int OUT){
     // Prn(OUT, 0, String(mqtt_server_ip));
     // Prn(OUT, 0, ":");
     // Prn(OUT, 1, String(MQTT_PORT));
-    Prn(OUT, 0,"      L  change ");
-    if(AprsON==true){
-      Prn(OUT, 1,"CALLSIGN with ssid 6-4 | "+YOUR_CALL);
-    }else{
-      Prn(OUT, 1,"location | "+YOUR_CALL);
-    }
+    Prn(OUT, 1,"      x  TX repeat time ["+String(MeasureTimer[1]/60000)+" min]");
     Prn(OUT, 0,"      A  APRS [");
       if(AprsON==true){
         Prn(OUT, 1,"ON]");
@@ -2860,8 +3024,8 @@ void ListCommands(int OUT){
         Prn(OUT, 1,"OFF]");
       }
       if(AprsON==true){
-        Prn(OUT, 0,"         i  change APRS server ip:port | ");
-        Prn(OUT, 1,String(aprs_server_ip[0])+"."+String(aprs_server_ip[1])+"."+String(aprs_server_ip[2])+"."+String(aprs_server_ip[3])+":"+String(AprsPort));
+        // Prn(OUT, 0,"         i  change APRS server ip:port | ");
+        // Prn(OUT, 1,String(aprs_server_ip[0])+"."+String(aprs_server_ip[1])+"."+String(aprs_server_ip[2])+"."+String(aprs_server_ip[3])+":"+String(AprsPort));
         Prn(OUT, 0,"         p  change APRS password | ");
         for (int i=208; i<213; i++){
           if(EEPROM.read(i)!=0xff){
@@ -2872,6 +3036,12 @@ void ListCommands(int OUT){
         Prn(OUT, 0,"         c  change APRS coordinate | ");
         Prn(OUT, 1,AprsCoordinates);
       }
+    Prn(OUT, 0,"      L  change ");
+      if(AprsON==true){
+        Prn(OUT, 1,"CALLSIGN with ssid 6-4 | "+YOUR_CALL);
+      }else{
+        Prn(OUT, 1,"location | "+YOUR_CALL);
+      }
     if(TxUdpBuffer[2]!='n'){
       Prn(OUT, 1,"      &  send broadcast packet");
     }
@@ -2879,7 +3049,7 @@ void ListCommands(int OUT){
       Prn(OUT, 0,"      q  disconnect and close telnet [verified IP ");
       Prn(OUT, 0, String(TelnetServerClientAuth[0])+"."+String(TelnetServerClientAuth[1])+"."+String(TelnetServerClientAuth[2])+"."+String(TelnetServerClientAuth[3]) );
       Prn(OUT, 1,"]");
-      Prn(OUT, 1,"      Q  logout with erase your IP from memory and close telnet");
+      Prn(OUT, 1,"      Q  logout with erase your verified IP from memory and close telnet");
     }else{
       Prn(OUT, 1,"      E  erase whole eeprom (telnet key also)");
       // Prn(OUT, 1,"      C  eeprom commit");
@@ -2893,380 +3063,12 @@ void ListCommands(int OUT){
     Prn(OUT, 1,"      .  reset timer and send measure");
     Prn(OUT, 1,"      W  erase wind speed max memory");
     Prn(OUT, 1,"      @  restart device");
-    Prn(OUT, 1,"---------------------------------------------");
-    Prn(OUT, 1, "" );
+    // Prn(OUT, 1,"---------------------------------------------");
+    Prn(OUT, 0, " > " );
   }
   // digitalWrite(EnablePin,0);
 }
 
-//-------------------------------------------------------------------------------------------------------
-void ListCommandsObsolete(int OUT){
-
-  #if defined(ETHERNET)
-    Prn(OUT, 1,"");
-    Prn(OUT, 1,"------  WX station [ESP32-POE] status  ------");
-    Prn(OUT, 0,"  http://");
-    Prn(OUT, 1, String(ETH.localIP()[0])+"."+String(ETH.localIP()[1])+"."+String(ETH.localIP()[2])+"."+String(ETH.localIP()[3]) );
-    Prn(OUT, 0,"  ETH: MAC ");
-    Prn(OUT, 0, String(ETH.macAddress()[0], HEX)+":"+String(ETH.macAddress()[1], HEX)+":"+String(ETH.macAddress()[2], HEX)+":"+String(ETH.macAddress()[3], HEX)+":"+String(ETH.macAddress()[4], HEX)+":"+String(ETH.macAddress()[5], HEX)+", " );
-    Prn(OUT, 0, String(ETH.linkSpeed()) );
-    Prn(OUT, 0,"Mbps");
-    if (ETH.fullDuplex()) {
-      Prn(OUT, 0,", FULL_DUPLEX ");
-    }
-  #else
-    Prn(OUT, 0,"  ETHERNET OFF ");
-  #endif
-  #if defined(WIFI)
-    Prn(OUT, 1,"  =================================");
-    Prn(OUT, 0,"  http://");
-    Prn(OUT, 1, String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) );
-    Prn(OUT, 0,"  dBm: ");
-    Prn(OUT, 1, String(WiFi.RSSI()) );
-  #else
-    Prn(OUT, 1,"  WIFI: OFF");
-  #endif
-
-  if(OUT==0){
-    Prn(OUT, 1,"  Key for telnet access:");
-    Prn(OUT, 0,"    ");
-    for(int i=0; i<100; i++){
-      Prn(OUT, 0, String(key[i]));
-      if((i+1)%10==0){
-        Prn(OUT, 0," ");
-      }
-    }
-    Prn(OUT, 1,"");
-  }
-  // Prn(OUT, 1, "  ChipID: "+ChipidHex);
-
-  Prn(OUT, 0,"  NTP UTC:");
-  Prn(OUT, 1, UtcTime(1));
-  Prn(OUT, 0,"  Uptime: ");
-  if(millis() < 60000){
-    Prn(OUT, 0, String(millis()/1000) );
-    Prn(OUT, 1," second");
-  }else if(millis() > 60000 && millis() < 3600000){
-    Prn(OUT, 0, String(millis()/60000) );
-    Prn(OUT, 1," minutes");
-  }else if(millis() > 3600000 && millis() < 86400000){
-    Prn(OUT, 0, String(millis()/3600000) );
-    Prn(OUT, 1," hours");
-  }else{
-    Prn(OUT, 0, String(millis()/86400000) );
-    Prn(OUT, 1," days");
-  }
-
-  if(RebootWatchdog > 0){
-    Prn(OUT, 0,"> Reboot countdown in ");
-    Prn(OUT, 0, String(RebootWatchdog-((millis()-WatchdogTimer)/60000)) );
-    Prn(OUT, 1, " minutes");
-  }
-  if(OutputWatchdog > 0 && OutputWatchdog<123456){
-    Prn(OUT, 0,"> Clear output countdown in ");
-    Prn(OUT, 0, String(OutputWatchdog-((millis()-WatchdogTimer)/60000)) );
-    Prn(OUT, 1," minutes");
-  }
-
-  Prn(OUT, 0,"  MqttSubscribe: "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT)+"/");
-    String topic = String(YOUR_CALL) + "/WX/sub";
-    const char *cstr = topic.c_str();
-    if(mqttClient.subscribe(cstr)==true){
-      Prn(OUT, 1, String(cstr));
-    }else{
-      Prn(OUT, 1, "FALSE");
-    }
-
-  Prn(OUT, 0,"  Firmware: ");
-  Prn(OUT, 1, String(REV));
-
-
-  Prn(OUT, 0,"  micro SD card present: ");
-  uint8_t cardType = SD_MMC.cardType();
-
-  if(cardType == CARD_NONE){
-      Prn(OUT, 1,"none ");
-      // return;
-  }else if(cardType == CARD_MMC){
-      Prn(OUT, 1,"MMC ");
-  } else if(cardType == CARD_SD){
-      Prn(OUT, 1,"SDSC ");
-  } else if(cardType == CARD_SDHC){
-      Prn(OUT, 1,"SDHC ");
-  } else {
-      Prn(OUT, 1,"unknown ");
-  }
-
-  Prn(OUT, 0,"  RpmPin ");
-    Prn(OUT, 0,String(digitalRead(RpmPin)));
-  Prn(OUT, 0," | Rain1Pin ");
-    Prn(OUT, 0,String(digitalRead(Rain1Pin)));
-  Prn(OUT, 0," | Rain2Pin ");
-    Prn(OUT, 1,String(digitalRead(Rain2Pin)));
-  // Prn(OUT, 0," | ButtonPin ");
-  //   Prn(OUT, 1, String(digitalRead(ButtonPin)));
-  Prn(OUT, 1,"---------------------------------------------");
-  if(digitalRead(Rain1Pin)==digitalRead(Rain2Pin)){
-    Prn(OUT, 1,"! Rain sensor malformed" );
-  }else{
-    Prn(OUT, 1,"  "+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+" | "+String(RainPulseToMM(RainCount))+"mm" );
-  }
-  // if(EnableSerialDebug>0){
-  // }else{
-  // }
-  Azimuth();
-  Prn(3, 0,"  Azimuth ");
-  Prn(3, 1,String(Azimuth(),BIN));
-  if(WindDir==-1){
-    Prn(OUT, 1,"! Wind direction sensor malformed" );
-  }else{
-    Prn(OUT, 1, "  Wind direction "+String(WindDir)+"° [with shift "+String(WindDirShift)+"°]");
-  }
-  Prn(OUT, 1, "  Wind speed last "+String(RpmPulse)+"ms | "+String(PulseToMetterBySecond(RpmPulse))+"m/s | "+String(PulseToMetterBySecond(RpmPulse)*3.6)+" km/h");
-  Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+"ms | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+"m/s | "+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+" km/h");
-  Prn(OUT, 1, "             MAX in period "+String(PeriodMinRpmPulse)+"ms | "+String(PulseToMetterBySecond(PeriodMinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h ("+String(PeriodMinRpmPulseTimestamp)+")");
-  Prn(OUT, 1, "             lifetime MAX "+String(MinRpmPulse)+"ms | "+String(PulseToMetterBySecond(MinRpmPulse))+"m/s | "+String(PulseToMetterBySecond(MinRpmPulse)*3.6)+" km/h ("+String(MinRpmPulseTimestamp)+")");
-  #if defined(HTU21D)
-    if(HTU21Denable==true){
-      Prn(OUT, 1, "  Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"% ["+String(htu.readTemperature())+"°C]");
-    }else{
-      Prn(OUT, 1, "  Humidity relative n/a");
-    }
-  #endif
-  #if defined(BMP280)
-    if(BMP280enable==true){
-      Prn(OUT, 1, "  Pressure "+String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100)+" hPa ["+String(bmp.readPressure()/100)+" raw] "+String(bmp.readTemperature())+"°C");
-    }else{
-      Prn(OUT, 1, "  Pressure n/a");
-    }
-  #endif
-  #if defined(DS18B20)
-    if(ExtTemp==true){
-      if(OUT==0){
-        Serial.flush();
-        Serial.end();
-      }
-      sensors.requestTemperatures();
-      float temperatureC = sensors.getTempCByIndex(0);
-      if(OUT==0){
-        Serial.begin(SERIAL_BAUDRATE);
-        while(!Serial) {
-          ; // wait for serial port to connect. Needed for native USB port only
-        }
-      }
-      Prn(OUT, 1, "  Temperature "+String(temperatureC)+"°C");
-    }
-  #endif
-  // Prn(OUT, 1, "  Humidity "+String()+"%");
-  // if(cardType!=CARD_NONE){
-  //   uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
-  //   // Serial.printf("SD_MMC Card Size: %lluMB\n", cardSize);
-  //   Prn(OUT, 1," | size "+String(printf("%lluMB", cardSize)));
-  // }
-  Prn(OUT, 1,"---------------------------------------------");
-  // Prn(OUT, 1,"  You can change source, with send character:");
-  // if(TxUdpBuffer[2]=='m'){
-  //   Prn(OUT, 0,"     [m]");
-  // }else{
-  //   Prn(OUT, 0,"      m ");
-  // }
-  // Prn(OUT, 1,"- IP switch master");
-  // if(TxUdpBuffer[2]=='r'){
-  //   Prn(OUT, 0,"     [r]");
-  // }else{
-  //   Prn(OUT, 0,"      r ");
-  // }
-  // Prn(OUT, 1,"- Band decoder");
-  // if(TxUdpBuffer[2]=='o'){
-  //   Prn(OUT, 0,"     [o]");
-  // }else{
-  //   Prn(OUT, 0,"      o ");
-  // }
-  // Prn(OUT, 1,"- Open Interface III");
-  // if(TxUdpBuffer[2]=='n'){
-  //   Prn(OUT, 0,"     [n]");
-  // }else{
-  //   Prn(OUT, 0,"      n ");
-  // }
-  // Prn(OUT, 1,"- none");
-  // Prn(OUT, 1,"");
-  Prn(OUT, 1,"      ?  list status and commands");
-  Prn(OUT, 0,"      m  Altitude [");
-  Prn(OUT, 0, String(Altitude)+" m]");
-  if(Altitude==0){
-    Prn(OUT, 0, " PLEASE SET ALTITUDE");
-  }
-  Prn(OUT, 1, "");
-
-  #if defined(DS18B20)
-    // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
-    Prn(OUT, 0,"      s  external temperature Sensor DS18B20 [O");
-      if(ExtTemp==true){
-        Prn(OUT, 1,"N]");
-      }else{
-        Prn(OUT, 1,"FF] CONNECT SENSOR (used inaccurate internal)");
-      }
-  #endif
-  Prn(OUT, 0,"      a  speed Alert [");
-  Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s] - not implemented");
-  if(TxUdpBuffer[2]!='n'){
-    Prn(OUT, 0,"      w  inactivity reboot watchdog ");
-    if(RebootWatchdog>0){
-      Prn(OUT, 0,"after [");
-      Prn(OUT, 0, String(RebootWatchdog) );
-      Prn(OUT, 1,"] minutes");
-    }else{
-      Prn(OUT, 1,"[disable]");
-    }
-    Prn(OUT, 0,"      W  inactivity clear output watchdog ");
-    if(OutputWatchdog>0){
-      Prn(OUT, 0,"after [");
-      Prn(OUT, 0, String(OutputWatchdog) );
-      Prn(OUT, 1,"] minutes");
-    }else{
-      Prn(OUT, 1,"[disable]");
-    }
-    Prn(OUT, 0,"      <  change Switch incoming UDP port [");
-    Prn(OUT, 0, String(IncomingSwitchUdpPort) );
-    Prn(OUT, 0,"]");
-    if(IncomingSwitchUdpPort!=88){
-      Prn(OUT, 0,"<-- WARNING! default is 88");
-    }
-    Prn(OUT, 1,"");
-  }
-  if(TxUdpBuffer[2] == 'm'){
-    Prn(OUT, 0,"      /  set encoder range - now [");
-    Prn(OUT, 0, String(NumberOfEncoderOutputs+1) );
-    if(NumberOfEncoderOutputs>7){
-      Prn(OUT, 1,"] (two bank)");
-    }else{
-      Prn(OUT, 1,"]");
-    }
-    Prn(OUT, 0,"      %  group buttons (select one from group) [");
-    if(EnableGroupButton==true){
-      Prn(OUT, 1,"ON]");
-      Prn(OUT, 1,"         !  SET group buttons");
-      Prn(OUT, 1,"         :  list group buttons");
-    }else{
-      Prn(OUT, 1,"OFF]");
-    }
-  }
-  Prn(OUT, 0,"      *  serial debug ");
-    if(EnableSerialDebug==0){
-      Prn(OUT, 1,"[OFF]");
-    }else if(EnableSerialDebug==1){
-      Prn(OUT, 1,"[ON]");
-    }else if(EnableSerialDebug==2){
-      Prn(OUT, 1,"[ON-frenetic]");
-    }
-  if(TxUdpBuffer[2]!='n'){
-    Prn(OUT, 0,"      #  network ID prefix [");
-    byte ID = NET_ID;
-    bitClear(ID, 0); // ->
-    bitClear(ID, 1);
-    bitClear(ID, 2);
-    bitClear(ID, 3);
-    ID = ID >> 4;
-    if(EnableGroupPrefix==true && TxUdpBuffer[2]=='m'){
-      Prn(OUT, 0,"x");
-    }else{
-      Prn(OUT, 0, String(ID, HEX) );
-    }
-    Prn(OUT, 0,"] hex");
-    if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-      Prn(OUT, 0," (set only on controllers)");
-    }
-    Prn(OUT, 1,"");
-
-    // if(HW_BCD_SW==false){
-      ID = NET_ID;
-      bitClear(ID, 4);
-      bitClear(ID, 5);
-      bitClear(ID, 6);
-      bitClear(ID, 7); // <-
-      Prn(OUT, 0,"         +network ID sufix [");
-      Prn(OUT, 0, String(ID, HEX) );
-      Prn(OUT, 0,"] hex");
-      if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-        Prn(OUT, 0," (multi control group - same at all)");
-      }
-      Prn(OUT, 1,"");
-    // }
-
-    if(TxUdpBuffer[2]=='m'){
-      Prn(OUT, 0,"      $  group network ID prefix (multi control) [");
-      if(EnableGroupPrefix==true){
-        Prn(OUT, 1,"ON]");
-      }else{
-        Prn(OUT, 1,"OFF]");
-      }
-    }
-    if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-      Prn(OUT, 1,"      .  list detected IP switch (multi control)");
-    }
-  }
-  #if defined(Ser2net)
-    Prn(OUT, 0,"      (  change serial1 baudrate [");
-    Prn(OUT, 0, String(SERIAL1_BAUDRATE) );
-    Prn(OUT, 1,"]");
-    Prn(OUT, 0,"      )  change ser2net IP port [");
-    Prn(OUT, 0, String(SerialServerIPport) );
-    Prn(OUT, 1,"]");
-  #endif
-
-  Prn(OUT, 1, "      +  change MQTT broker IP | "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT));
-  // Prn(OUT, 0, String(mqtt_server_ip));
-  // Prn(OUT, 0, ":");
-  // Prn(OUT, 1, String(MQTT_PORT));
-  Prn(OUT, 0,"      L  change ");
-  if(AprsON==true){
-    Prn(OUT, 1,"CALLSIGN with ssid 6-4 | "+YOUR_CALL);
-  }else{
-    Prn(OUT, 1,"location | "+YOUR_CALL);
-  }
-  Prn(OUT, 0,"      A  APRS [");
-    if(AprsON==true){
-      Prn(OUT, 1,"ON]");
-    }else{
-      Prn(OUT, 1,"OFF]");
-    }
-    if(AprsON==true){
-      Prn(OUT, 0,"         i  change APRS server ip:port | ");
-      Prn(OUT, 1,String(aprs_server_ip[0])+"."+String(aprs_server_ip[1])+"."+String(aprs_server_ip[2])+"."+String(aprs_server_ip[3])+":"+String(AprsPort));
-      Prn(OUT, 0,"         p  change APRS password | ");
-      for (int i=208; i<213; i++){
-        if(EEPROM.read(i)!=0xff){
-          Prn(OUT, 0,"*");
-        }
-      }
-      Prn(OUT, 1,"");
-      Prn(OUT, 0,"         c  change APRS coordinate | ");
-      Prn(OUT, 1,AprsCoordinates);
-    }
-  if(TxUdpBuffer[2]!='n'){
-    Prn(OUT, 1,"      &  send broadcast packet");
-  }
-  if(TelnetServerClients[0].connected()){
-    Prn(OUT, 0,"      q  disconnect and close telnet [verified IP ");
-    Prn(OUT, 0, String(TelnetServerClientAuth[0])+"."+String(TelnetServerClientAuth[1])+"."+String(TelnetServerClientAuth[2])+"."+String(TelnetServerClientAuth[3]) );
-    Prn(OUT, 1,"]");
-    Prn(OUT, 1,"      Q  logout with erase your IP from memory and close telnet");
-  }else{
-    Prn(OUT, 1,"      E  erase whole eeprom (telnet key also)");
-    // Prn(OUT, 1,"      C  eeprom commit");
-    Prn(OUT, 1,"      /  list directory");
-    Prn(OUT, 1,"      R  read log file");
-  }
-  Prn(OUT, 1,"      e  list EEPROM");
-  #if !defined(BMP280) && !defined(HTU21D)
-    Prn(OUT, 1,"      2  I2C scanner");
-  #endif
-  Prn(OUT, 1,"      .  reset timer and send measure");
-  Prn(OUT, 1,"      W  erase wind speed max memory");
-  Prn(OUT, 1,"      @  restart device");
-  Prn(OUT, 1,"---------------------------------------------");
-  Prn(OUT, 1, "" );
-}
 //-------------------------------------------------------------------------------------------------------
 float RainPulseToMM(int PULSE){
   if(PULSE>20000 || PULSE==0){
@@ -4000,16 +3802,18 @@ void http2(){
           webClient2.print(F("<!doctype html><html><head><title>"));
           webClient2.print(YOUR_CALL);
           webClient2.print(F(" WX</title><meta http-equiv=\"refresh\" content=\"1800\"><meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\"><style type=\"text/css\">body {font-family: 'Roboto Condensed',sans-serif,Arial,Tahoma,Verdana; background: #444;}</style><link href='http://fonts.googleapis.com/css?family=Roboto+Condensed:300italic,400italic,700italic,400,700,300&subset=latin-ext' rel='stylesheet' type='text/css'></head><body><p style=\"color: #ccc; margin: 0 0 0 0; text-align: center;\"><span style=\"color: #999; font-size: 800%;\">"));
-          if(ExtTemp==true){
-            sensors.requestTemperatures();
-            int temperatureC = sensors.getTempCByIndex(0);
-            // dtostrf(temperatureC, 1, 0, buf);  //1 is mininum width, 0 is precision
-            webClient2.print(String(temperatureC));
-          }else{
-            int temperatureC = htu.readTemperature();
-            webClient2.print(String(temperatureC));
-            Serial.println(temperatureC);
-          }
+          // if(ExtTemp==true){
+          //   sensors.requestTemperatures();
+          //   int temperatureC = sensors.getTempCByIndex(0);
+          //   // dtostrf(temperatureC, 1, 0, buf);  //1 is mininum width, 0 is precision
+          //   webClient2.print(String(temperatureC));
+          // }else{
+          //   int temperatureC = htu.readTemperature();
+          //   webClient2.print(String(temperatureC));
+          //   Serial.println(temperatureC);
+          // }
+
+          webClient2.print(String(bmp.readTemperature()));
           webClient2.println(F("&deg;</span><br><span style=\"color: #000; background: #080; padding: 4px 6px 4px 6px; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;\">"));
           #if defined(HTU21D)
             if(HTU21Denable==true){
@@ -4024,9 +3828,9 @@ void http2(){
           #endif
           webClient2.print(F(" hPa "));
           if(RainCount>0){
-            webClient2.print(F("| <strong style=\"color: #00f;\">"));
+            webClient2.print(F("| <strong style=\"color: #008;\">"));
             webClient2.print(String(RainPulseToMM(RainCount)));
-            webClient2.print(F(" mm </span>"));
+            webClient2.print(F(" mm </strong>"));
           }
           webClient2.print(F("| <strong style=\"color: #fff;\">"));
           webClient2.print(String(PulseToMetterBySecond(PeriodMinRpmPulse)));
@@ -4227,7 +4031,8 @@ void MqttRx(char *topic, byte *payload, unsigned int length) {
       #if defined(DS18B20)
         if(ExtTemp==true){
           sensors.requestTemperatures();
-          float temperatureC = sensors.getTempCByIndex(0);
+          // float temperatureC = sensors.getTempCByIndex(0);
+          float temperatureC = sensors.getTempC(insideThermometer);
           MqttPubString("Temperature-Celsius", String(temperatureC), false);
         }else{
           MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
@@ -5048,3 +4853,49 @@ void testFileIO(fs::FS &fs, const char * path){
     Serial.printf("%u bytes written for %u ms\n", 2048 * 512, end);
     file.close();
 }
+
+#if defined(DS18B20)
+  // function to print a device address
+  void printAddress(DeviceAddress deviceAddress)
+  {
+    for (uint8_t i = 0; i < 8; i++)
+    {
+      // zero pad the address if necessary
+      if (deviceAddress[i] < 16) Serial.print("0");
+      Serial.print(deviceAddress[i], HEX);
+    }
+  }
+
+  // function to print the temperature for a device
+  void printTemperature(DeviceAddress deviceAddress)
+  {
+    float tempC = sensors.getTempC(deviceAddress);
+    if(tempC == DEVICE_DISCONNECTED_C)
+    {
+      Serial.println("DS18B20 Error: Could not read temperature data");
+      return;
+    }
+    // Serial.print("Temp C: ");
+    Serial.print(tempC);
+  //  Serial.print(" Temp F: ");
+  //  Serial.print(DallasTemperature::toFahrenheit(tempC));
+  }
+
+  // function to print a device's resolution
+  void printResolution(DeviceAddress deviceAddress)
+  {
+    Serial.print("Resolution: ");
+    Serial.print(sensors.getResolution(deviceAddress));
+    Serial.println();
+  }
+
+  // main function to print information about a device
+  void printData(DeviceAddress deviceAddress)
+  {
+    Serial.print("DS18B20 address: ");
+    printAddress(deviceAddress);
+    Serial.print(" ");
+    printTemperature(deviceAddress);
+    Serial.println();
+  }
+#endif
