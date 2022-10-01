@@ -111,7 +111,7 @@ const char* ssid     = "";
 const char* password = "";
 const float FunelDiaInCM = 10.0; // cm funnel diameter
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20220925";
+const char* REV = "20221001";
 // unsigned long TimerTemp;
 
 // interrupts
@@ -133,7 +133,7 @@ bool RainStatus;
 float mmInPulse = 0.87/(3.14*(FunelDiaInCM/2)*(FunelDiaInCM/2)/10); // rain mm, in one pulse
 
 int WindDir = 0;
-unsigned int WindDirShift = 0;
+int WindDirShift = 0;
 
 long RpmTimer[2]={0,3000};
 long RpmPulse = 987654321;
@@ -182,7 +182,7 @@ int i = 0;
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "EEPROM.h"
-#define EEPROM_SIZE 241   /*
+#define EEPROM_SIZE 244   /*
 0    -listen source
 1    -net ID
 2    -encoder range
@@ -215,7 +215,7 @@ int i = 0;
 235-238 - SpeedAlert 4
 // 233 - DS18B20 on/off 1
 239 - DS18B20 on/off 1
-240 - WindDirShift 1
+240-243 - WindDirShift 4
 
 !! Increment EEPROM_SIZE #define !!
 
@@ -762,7 +762,7 @@ void setup() {
     }
   #endif
 
-  // 240 WindDirShift
+  // 240-243 WindDirShift
   if(EEPROM.readByte(240)!=255){
     WindDirShift = EEPROM.readInt(240);
   }
@@ -1768,10 +1768,12 @@ void CLI(){
   }else if(incomingByte==101){
       Prn(OUT, 1,"List EEPROM [adr>value]");
       for (int i=0; i<EEPROM_SIZE; i++){
-        Prn(OUT, 0, String(i));
-        Prn(OUT, 0, ">" );
-        Prn(OUT, 0, String(EEPROM.read(i)) );
-        Prn(OUT, 0, " " );
+        if( (i<41)||(i>140&&i<208)||(i>212) ){  // hiden pass
+          Prn(OUT, 0, String(i));
+          Prn(OUT, 0, ">" );
+          Prn(OUT, 0, String(EEPROM.read(i)) );
+          Prn(OUT, 0, " " );
+        }
       }
       Prn(OUT, 1, "" );
 
@@ -2344,6 +2346,7 @@ void CLI(){
       Altitude = intBuf;
       EEPROM.writeInt(231, Altitude); // address, value
       EEPROM.commit();
+      Prn(OUT, 1," altitude "+String(EEPROM.readInt(231))+"m has been saved");
     }else{
       Prn(OUT, 1," Out of range");
     }
@@ -2372,6 +2375,7 @@ void CLI(){
       WindDirShift = intBuf;
       EEPROM.writeInt(240, WindDirShift); // address, value
       EEPROM.commit();
+      Prn(OUT, 1," shift "+String(EEPROM.readInt(240))+"° has been saved");
     }else{
       Prn(OUT, 1," Out of range");
     }
@@ -2664,19 +2668,31 @@ void ListCommands(int OUT){
       Prn(OUT, 1," --------------------------");
     Prn(OUT, 1," And save telnet access key:");
     Prn(OUT, 1,"");
-    Prn(OUT, 0,"    ");
-      for(int i=0; i<100; i++){
-        Prn(OUT, 0, String(key[i]));
-        if((i+1)%10==0){
-          Prn(OUT, 1,"");
-          Prn(OUT, 0,"    ");
-        }
+    Prn(OUT, 1,"   [position] key");
+    Prn(OUT, 0," ");
+    for(int i=0; i<10; i++){
+      Prn(OUT, 0,"    ["+String(i*10+1)+"-"+String(i*10+10)+"]  ");
+      if(i<9){
+        Prn(OUT, 0," ");
+      }
+      for(int j=0; j<10; j++){
+        Prn(OUT, 0, String(key[i*10+j]));
       }
       Prn(OUT, 1,"");
-      Prn(OUT, 1," Then disconnect the USB, connect the POE injector, and log in using telnet");
-      Prn(OUT, 1," More information https://remoteqth.com/w/doku.php?id=3d_print_wx_station#second_step_connect_remotely_via_ip");
-      Prn(OUT, 1," ==========================");
-      Prn(OUT, 1,"");
+    }
+    // Prn(OUT, 0,"    ");
+    //   for(int i=0; i<100; i++){
+    //     Prn(OUT, 0, String(key[i]));
+    //     if((i+1)%10==0){
+    //       Prn(OUT, 1,"");
+    //       Prn(OUT, 0,"    ");
+    //     }
+    //   }
+    Prn(OUT, 1,"");
+    Prn(OUT, 1," Then disconnect the USB, and log in using telnet");
+    Prn(OUT, 1," More information https://remoteqth.com/w/doku.php?id=3d_print_wx_station#second_step_connect_remotely_via_ip");
+    Prn(OUT, 1," ==========================");
+    Prn(OUT, 1,"");
   }
   else{
     #if defined(ETHERNET)
