@@ -34,6 +34,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20221104 - calibrate rain
 20220910 - HW rev5, DS18B20 autodetect,
 20220429 - add html preview page on port 88
 20220307 - add wind direction shift settings for non North orientation, update for new lib
@@ -59,11 +60,16 @@ ToDo
   https://community.windy.com/topic/8168/report-your-weather-station-data-to-windy
   https://github.com/zpukr/esp8266-WindStation/blob/master/esp8266-WindStation.ino
 - Sunset https://github.com/buelowp/sunset/blob/master/examples/esp/example.ino
-- add DNS
 - telnet inactivity to close
-- SD card log
 - clear code
 - https://github.com/Sensirion/arduino-sht
+APRS-lora
+https://how2electronics.com/esp32-lora-thingspeak-gateway-sensor-node/
+https://learn.adafruit.com/adafruit-rfm69hcw-and-rfm96-rfm95-rfm98-lora-packet-padio-breakouts/rfm9x-test
+https://github.com/lora-aprs/LoRa_APRS_Tracker/blob/master/src/configuration.cpp#L73
+https://github.com/josefmtd/lora-aprs
+https://on5vl.org/lora-aprs-le-guide-pratique/
+
 
 Použití knihovny WiFi ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/WiFi
 Použití knihovny EEPROM ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/EEPROM
@@ -88,8 +94,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-#define HW7                         // >>>SHT21, gpio13 1wire, gpio12 ETH/LoRa POWER
-#define HW5                         // SHT21, EnablePin (gpio13 sensors ON), gpio12 ETH_POWER also enable RF lora module
+#define HWREV 8                     // PCB version [7-8]
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
@@ -100,10 +105,17 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
 #define ETH_ADDR 0
 #define ETH_TYPE ETH_PHY_LAN8720
-#define ETH_POWER 12                // mosfet on VDDIO
+#if HWREV==8
+  #define ETH_POWER 0                // #define ETH_PHY_POWER 0 ./Arduino/hardware/espressif/esp32/variants/esp32-poe/pins_arduino.h
+#endif
+#if HWREV==7
+  #define ETH_POWER 12                // mosfet on VDDIO
+#endif
 #define ETH_MDC 23                  // MDC pin17
 #define ETH_MDIO 18                 // MDIO pin16
 #define ETH_CLK ETH_CLOCK_GPIO17_OUT    // CLKIN pin5 | settings for ESP32 GATEWAY rev f-g
+String MACString;
+char MACchar[18];
 // #define ETH_CLK ETH_CLOCK_GPIO0_OUT    // settings for ESP32 GATEWAY rev c and older
 // ETH.begin(ETH_ADDR, ETH_POWER, ETH_MDC, ETH_MDIO, ETH_TYPE, ETH_CLK);
 // #define WIFI                     // Enable ESP32 WIFI (DHCP IPv4) - NOT TESTED
@@ -111,7 +123,7 @@ const char* ssid     = "";
 const char* password = "";
 const float FunelDiaInCM = 10.0; // cm funnel diameter
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20221001";
+const char* REV = "20230226";
 // unsigned long TimerTemp;
 
 // interrupts
@@ -130,7 +142,8 @@ bool RainStatus;
 1mm rain = 15,7cm^2/10 = 1,57ml     <- by rain funnel radius
 10ml = 11,5 pulses = 0,87ml/pulse   <- constanta tilting measuring cup
 */
-float mmInPulse = 0.87/(3.14*(FunelDiaInCM/2)*(FunelDiaInCM/2)/10); // rain mm, in one pulse
+// float mmInPulse = 0.87/(3.14*(FunelDiaInCM/2)*(FunelDiaInCM/2)/10); // calculate rain mm, in one pulse
+float mmInPulse = 0.2 ; // callibration rain 17,7-20,2 mm with 95 pulse
 
 int WindDir = 0;
 int WindDirShift = 0;
@@ -365,8 +378,13 @@ byte ShiftOutByte[3];
 #endif
 
 const int RpmPin = 39;
-const int Rain1Pin = 36;
-const int Rain2Pin = 35;
+#if HWREV==8
+  const int RainPin = 36;
+#endif
+#if HWREV==7
+  const int Rain1Pin = 36;
+  const int Rain2Pin = 35;
+#endif
 // const int EnablePin = 13;
 // const int ButtonPin = 34;
 
@@ -444,7 +462,12 @@ String AprsCoordinates;
   #include <OneWire.h>
   #include <DallasTemperature.h>
   // Data wire is plugged into port 2 on the Arduino
-  #define ONE_WIRE_BUS 13 //2
+  #if HWREV==8
+    #define ONE_WIRE_BUS 2
+  #endif
+  #if HWREV==7
+    #define ONE_WIRE_BUS 13
+  #endif
   #define TEMPERATURE_PRECISION 9 // 9-12
   // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
   OneWire oneWire(ONE_WIRE_BUS);
@@ -467,9 +490,15 @@ void setup() {
   // for (int i = 0; i < 8; i++) {
   //   pinMode(TestPin[i], INPUT);
   // }
+  #if HWREV==8
+    pinMode(RainPin, INPUT);
+  #endif
+  #if HWREV==7
+    pinMode(Rain1Pin, INPUT);
+    pinMode(Rain2Pin, INPUT);
+  #endif
+
   pinMode(RpmPin, INPUT);
-  pinMode(Rain1Pin, INPUT);
-  pinMode(Rain2Pin, INPUT);
   // pinMode(EnablePin, OUTPUT);
   // digitalWrite(EnablePin,1);
 
@@ -843,17 +872,6 @@ void setup() {
     //   ChipidHex = String(long1, HEX) + String(long2, HEX); // six octets
     //   YOUR_CALL=ChipidHex;
 
-    // EEPROM YOUR_CALL
-    if(EEPROM.read(141)==0xff){
-      YOUR_CALL=String(ETH.macAddress()[0], HEX)+String(ETH.macAddress()[1], HEX)+String(ETH.macAddress()[2], HEX)+String(ETH.macAddress()[3], HEX)+String(ETH.macAddress()[4], HEX)+String(ETH.macAddress()[5], HEX);
-    }else{
-      for (int i=141; i<161; i++){
-        if(EEPROM.read(i)!=0xff){
-          YOUR_CALL=YOUR_CALL+char(EEPROM.read(i));
-        }
-      }
-    }
-
   #if defined(EnableOTA)
     // Port defaults to 3232
     // ArduinoOTA.setPort(3232);
@@ -920,11 +938,22 @@ void setup() {
   TelnetServer.begin(TelnetServerIPport);
   // TelnetlServer.setNoDelay(true);
 
-  if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
-    RainStatus=false;
-  }else if(digitalRead(Rain1Pin)==1 && digitalRead(Rain2Pin)==0){
-    RainStatus=true;
-  }
+
+  #if HWREV==8
+    int intBuf = analogRead(RainPin);
+    if(intBuf<1000){
+      RainStatus=false;
+    }else if(intBuf>=1000 && intBuf<=2000){
+      RainStatus=true;
+    }
+  #endif
+  #if HWREV==7
+    if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
+      RainStatus=false;
+    }else if(digitalRead(Rain1Pin)==1 && digitalRead(Rain2Pin)==0){
+      RainStatus=true;
+    }
+  #endif
 
   #if defined(RF69_EXTERNAL_SENSOR)
    // clock, miso,mosi, ss
@@ -1162,44 +1191,69 @@ void Watchdog(){
 
   // Rain counter 5sec
   if(millis()-RainTimer[0]>RainTimer[1]){
-    if(EnableSerialDebug>1){Prn(3, 1,"*RainStatus "+String(RainStatus)+"|RainCount "+String(RainCount)+"|"+String(UtcTime(1)));}
-
-    // digitalWrite(EnablePin,1);
-    if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
-      if(RainStatus==true){
-        // #if defined(HTU21D)
-        //   if(HTU21Denable==true){
-        //     // debouncing
-        //     if(htu.readHumidity()>90){
-              RainCount++;
-              MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
-              MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
-        //     }
-        //   }
-        // #endif
-        RainStatus=false;
+    #if HWREV==8
+      if(EnableSerialDebug>1){Prn(3, 1,"*RainStatus "+String(RainStatus)+"|RainCount "+String(RainCount)+"|"+String(UtcTime(1)));}
+      int intBuf = analogRead(RainPin);
+      if(intBuf<1000){
+        if(RainStatus==true){
+          RainCount++;
+          MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+          MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
+          RainStatus=false;
+        }
+      }else if(intBuf>=1000 && intBuf<=2000){
+        if(RainStatus==false){
+          RainCount++;
+          MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+          MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
+          RainStatus=true;
+        }
       }
-    }else if(digitalRead(Rain1Pin)==1 && digitalRead(Rain2Pin)==0){
-      if(RainStatus==false){
-        // #if defined(HTU21D)
-        //   if(HTU21Denable==true){
-        //     // debouncing
-        //     if(htu.readHumidity()>90){
-              RainCount++;
-              MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
-              MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
-        //     }
-        //   }
-        // #endif
-        RainStatus=true;
+      RainTimer[0]=millis();
+      if(RainCountDayOfMonth=="n/a"){
+        RainCountDayOfMonth=UtcTime(2);
       }
-    }
-    RainTimer[0]=millis();
+    #endif
 
-    if(RainCountDayOfMonth=="n/a"){
-      RainCountDayOfMonth=UtcTime(2);
-    }
-    // digitalWrite(EnablePin,0);
+    #if HWREV==7
+      if(EnableSerialDebug>1){Prn(3, 1,"*RainStatus "+String(RainStatus)+"|RainCount "+String(RainCount)+"|"+String(UtcTime(1)));}
+      // digitalWrite(EnablePin,1);
+      if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
+        if(RainStatus==true){
+          // #if defined(HTU21D)
+          //   if(HTU21Denable==true){
+          //     // debouncing
+          //     if(htu.readHumidity()>90){
+                RainCount++;
+                MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+                MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
+          //     }
+          //   }
+          // #endif
+          RainStatus=false;
+        }
+      }else if(digitalRead(Rain1Pin)==1 && digitalRead(Rain2Pin)==0){
+        if(RainStatus==false){
+          // #if defined(HTU21D)
+          //   if(HTU21Denable==true){
+          //     // debouncing
+          //     if(htu.readHumidity()>90){
+                RainCount++;
+                MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+                MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
+          //     }
+          //   }
+          // #endif
+          RainStatus=true;
+        }
+      }
+      RainTimer[0]=millis();
+
+      if(RainCountDayOfMonth=="n/a"){
+        RainCountDayOfMonth=UtcTime(2);
+      }
+      // digitalWrite(EnablePin,0);
+    #endif
   }
 
   // TX repeat time
@@ -1655,264 +1709,56 @@ void CLI(){
     if(incomingByte==63){
       ListCommands(OUT);
 
-    // m
-    // }else if(incomingByte==109){
-    //   TxUdpBuffer[2] = 'm';
-    //   EEPROM.write(0, 'm'); // address, value
-    //   EEPROM.commit();
-    //   Prn(OUT, 1,"Now control from: IP switch master");
-    //   if(EnableSerialDebug>0){
-    //     Prn(OUT, 0,"EEPROM read [");
-    //     Prn(OUT, 0, String(EEPROM.read(0)) );
-    //     Prn(OUT, 1,"]");
-    //   }
-    //   TxUDP('s', packetBuffer[2], 'b', 'r', 'o', 0);    // 0=broadcast, 1= direct to RX IP
-    //   if(TxUdpBuffer[2] == 'm'){
-    //     TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-    //   }
-
-    // r
-    // }else if(incomingByte==114){
-    //   EnableGroupPrefix=false;
-    //     EEPROM.write(4, EnableGroupPrefix);
-    //     EEPROM.commit();
-    //   EnableGroupButton=false;
-    //     EEPROM.write(5, EnableGroupButton);
-    //     EEPROM.commit();
-    //   TxUdpBuffer[2] = 'r';
-    //   EEPROM.write(0, 'r'); // address, value
-    //   EEPROM.commit();
-    //   Prn(OUT, 1,"Now control from: Band decoder");
-    //   if(EnableSerialDebug>0){
-    //     Prn(OUT, 0,"EEPROM read [");
-    //     Prn(OUT, 0, String(EEPROM.read(0)) );
-    //     Prn(OUT, 1,"]");
-    //   }
-    //   TxUDP('s', packetBuffer[2], 'b', 'r', 'o', 0);    // 0=broadcast, 1= direct to RX IP
-    //   if(TxUdpBuffer[2] == 'm'){
-    //     TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-    //   }
-    //
-    // // o
-    // }else if(incomingByte==111){
-    //   EnableGroupPrefix=false;
-    //     EEPROM.write(4, EnableGroupPrefix);
-    //     EEPROM.commit();
-    //   EnableGroupButton=false;
-    //     EEPROM.write(5, EnableGroupButton);
-    //     EEPROM.commit();
-    //   TxUdpBuffer[2] = 'o';
-    //   EEPROM.write(0, 'o'); // address, value
-    //   EEPROM.commit();
-    //   Prn(OUT, 1,"Now control from: Open Interface III");
-    //   if(EnableSerialDebug>0){
-    //     Prn(OUT, 0,"EEPROM read [");
-    //     Prn(OUT, 0, String(EEPROM.read(0)) );
-    //     Prn(OUT, 1,"]");
-    //   }
-    //   TxUDP('s', packetBuffer[2], 'b', 'r', 'o', 0);    // 0=broadcast, 1= direct to RX IP
-    //   if(TxUdpBuffer[2] == 'm'){
-    //     TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-    //   }
-    //
-    // // n
-    // }else if(incomingByte==110){
-    //   EnableGroupPrefix=false;
-    //   EEPROM.write(4, EnableGroupPrefix);
-    //   EnableGroupButton=false;
-    //   EEPROM.write(5, EnableGroupButton);
-    //   TxUdpBuffer[2] = 'n';
-    //   EEPROM.write(0, 'n'); // address, value
-    //   EEPROM.commit();
-    //   Prn(OUT, 1,"Now control from: none");
-
-  // +
-  }else if(incomingByte==43){
-    Prn(OUT, 1,"  enter MQTT broker IP address by four number (0-255) and press [enter] after each");
-    Prn(OUT, 1,"  NOTE: public remoteqth broker 54.38.157.134:1883");
-    for (int i=0; i<5; i++){
-      if(i==4){
-        Prn(OUT, 0,"enter IP port (1-65535) and press [");
-      }
-      if(TelnetAuthorized==true){
-        Prn(OUT, 1,"enter]");
-      }else{
-        Prn(OUT, 1,";]");
-      }
-      Enter();
-      int intBuf=0;
-      int mult=1;
-      for (int j=InputByte[0]; j>0; j--){
-        intBuf = intBuf + ((InputByte[j]-48)*mult);
-        mult = mult*10;
-      }
-      if( (i<4 && intBuf>=0 && intBuf<=255) || (i==4 && intBuf>=1 && intBuf<=65535) ){
+    // +
+    }else if(incomingByte==43){
+      Prn(OUT, 1,"  enter MQTT broker IP address by four number (0-255) and press [enter] after each");
+      Prn(OUT, 1,"  NOTE: public remoteqth broker 54.38.157.134:1883");
+      for (int i=0; i<5; i++){
         if(i==4){
-          EEPROM.writeInt(165, intBuf);
+          Prn(OUT, 0,"enter IP port (1-65535) and press [");
+        }
+        if(TelnetAuthorized==true){
+          Prn(OUT, 1,"enter]");
         }else{
-          EEPROM.writeByte(161+i, intBuf);
+          Prn(OUT, 1,";]");
         }
-        // Prn(OUT, 1,"EEPROMcomit");
-        EEPROM.commit();
-      }else{
-        Prn(OUT, 1,"Out of range.");
-        break;
-      }
-    }
-    Prn(OUT, 0,"** device will be restarted **");
-    delay(1000);
-    TelnetServerClients[0].stop();
-    ESP.restart();
-
-    // e
-  }else if(incomingByte==101){
-      Prn(OUT, 1,"List EEPROM [adr>value]");
-      for (int i=0; i<EEPROM_SIZE; i++){
-        if( (i<41)||(i>140&&i<208)||(i>212) ){  // hiden pass
-          Prn(OUT, 0, String(i));
-          Prn(OUT, 0, ">" );
-          Prn(OUT, 0, String(EEPROM.read(i)) );
-          Prn(OUT, 0, " " );
+        Enter();
+        int intBuf=0;
+        int mult=1;
+        for (int j=InputByte[0]; j>0; j--){
+          intBuf = intBuf + ((InputByte[j]-48)*mult);
+          mult = mult*10;
         }
-      }
-      Prn(OUT, 1, "" );
-
-    // w
-    }else if(incomingByte==119 && TxUdpBuffer[2]!='n'){
-      Prn(OUT, 1,"Write reboot watchdog in minutes (0-10080), 0-disable");
-      Prn(OUT, 1,"recomended 1440 (1 day)");
-      EnterInt(OUT);
-      if(CompareInt>=0 && CompareInt<=10080){
-        RebootWatchdog = CompareInt;
-        EEPROM.writeUInt(26, RebootWatchdog);
-        EEPROM.commit();
-        Prn(OUT, 0," Set ");
-        Prn(OUT, 0, String(EEPROM.readUInt(26)) );
-        Prn(OUT, 1," minutes");
-      }else{
-        Prn(OUT, 0,"Out of range.");
-      }
-
-    // W
-    }else if(incomingByte==87 && TxUdpBuffer[2]!='n'){
-      Prn(OUT, 1,"Write clear output watchdog in minutes (0-10080), 0-disable");
-      Prn(OUT, 1,"note: if you need clear output after reboot watchdog, set smaller than it");
-      EnterInt(OUT);
-      if(CompareInt>=0 && CompareInt<=10080){
-        OutputWatchdog = CompareInt;
-        EEPROM.writeUInt(30, OutputWatchdog);
-        EEPROM.commit();
-        Prn(OUT, 0," Set ");
-        Prn(OUT, 0, String(EEPROM.readUInt(30)) );
-        Prn(OUT, 1," minutes");
-      }else{
-        Prn(OUT, 0,"Out of range.");
-      }
-
-    // <
-    }else if(incomingByte==60 && TxUdpBuffer[2]!='n'){
-      Prn(OUT, 1,"write UDP port (1-65535)");
-      EnterInt(OUT);
-      if(CompareInt>=1 && CompareInt<=65535){
-        IncomingSwitchUdpPort = CompareInt;
-        EEPROM.writeInt(22, IncomingSwitchUdpPort);
-        EEPROM.commit();
-        Prn(OUT, 0," Set ");
-        Prn(OUT, 1, String(IncomingSwitchUdpPort) );
-        Prn(OUT, 0,"** device will be restarted **");
-        delay(1000);
-        TelnetServerClients[0].stop();
-        ESP.restart();
-      }else{
-        Prn(OUT, 0,"Out of range.");
-      }
-
-    // /
-    }else if(incomingByte==47 && TxUdpBuffer[2] == 'm'){
-      Prn(OUT, 1,"write encoder rannge number (2-16)");
-      EnterInt(OUT);
-      if(CompareInt>=2 && CompareInt<=16){
-        NumberOfEncoderOutputs = CompareInt;
-/*      EnterChar(OUT);
-      // 2-G
-      if( (incomingByte>=50 && incomingByte<=57) || (incomingByte>=97 && incomingByte<=103) ){
-        if(incomingByte>=50 && incomingByte<=57){
-          NumberOfEncoderOutputs = incomingByte-48;
-        }else if(incomingByte>=97 && incomingByte<=103){
-          NumberOfEncoderOutputs = incomingByte-87;
-        }*/
-        NumberOfEncoderOutputs--;
-        EEPROM.write(2, NumberOfEncoderOutputs); // address, value
-        EEPROM.commit();
-        Prn(OUT, 0,"** Now Encoder range change to ");
-        Prn(OUT, 0, String(NumberOfEncoderOutputs+1) );
-        Prn(OUT, 1," **");
-        if(EnableSerialDebug>0){
-          Prn(OUT, 0,"EEPROM read [");
-          Prn(OUT, 0, String(EEPROM.read(2)) );
-          Prn(OUT, 1,"]");
-        }
-        TxUDP('s', packetBuffer[2], 'c', 'f', 'm', 1);    // 0=broadcast, 1= direct to RX IP
-        if(TxUdpBuffer[2] == 'm'){
-          TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-        }
-      }else{
-        Prn(OUT, 1,"Out of range");
-      }
-
-    // %
-    }else if(incomingByte==37){
-      EnableGroupButton=!EnableGroupButton;
-      Prn(OUT, 0,"** Group buttons (one from) [");
-      EEPROM.write(5, EnableGroupButton);
-      EEPROM.commit();
-      if(EnableGroupButton==true){
-        Prn(OUT, 1,"ON] **");
-        for (int i = 0; i < 8; i++) {
-          if(EEPROM.read(6+i)<9){
-            GroupButton[i]=EEPROM.read(6+i);
+        if( (i<4 && intBuf>=0 && intBuf<=255) || (i==4 && intBuf>=1 && intBuf<=65535) ){
+          if(i==4){
+            EEPROM.writeInt(165, intBuf);
+          }else{
+            EEPROM.writeByte(161+i, intBuf);
           }
-        }
-      }else{
-        Prn(OUT, 1,"OFF] **");
-      }
-
-    // :
-    }else if(incomingByte==58 && EnableGroupButton==true){
-      Prn(OUT, 1," List groups");
-      for (int i = 0; i < 8; i++) {
-        Prn(OUT, 0,"  Button ");
-        Prn(OUT, 0, String(i+1) );
-        Prn(OUT, 0," in group ");
-        Prn(OUT, 1, String(GroupButton[i]) );
-      }
-
-    // !
-    }else if(incomingByte==33 && EnableGroupButton==true){
-      Prn(OUT, 1,"Press button number 1-8...");
-      EnterChar(OUT);
-      if( (incomingByte>=49 && incomingByte<=56)){
-        unsigned int ButtonNumber=incomingByte-48;
-        Prn(OUT, 0,"Press Group number 1-8 for button ");
-        Prn(OUT, 1, String(ButtonNumber) );
-        EnterChar(OUT);
-        if( (incomingByte>=49 && incomingByte<=56)){
-          unsigned int ButtonGroup=incomingByte-48;
-          Prn(OUT, 0," store Button ");
-          Prn(OUT, 0, String(ButtonNumber) );
-          Prn(OUT, 0," to group ");
-          Prn(OUT, 1, String(ButtonGroup) );
-          GroupButton[ButtonNumber-1]=ButtonGroup;
-          for (int i = 0; i < 8; i++) {
-            EEPROM.write(6+i, GroupButton[i]);
-          }
+          // Prn(OUT, 1,"EEPROMcomit");
           EEPROM.commit();
         }else{
-          Prn(OUT, 1," accepts 0-8, exit");
+          Prn(OUT, 1,"Out of range.");
+          break;
         }
-      }else{
-        Prn(OUT, 1," accepts 0-8, exit");
       }
+      Prn(OUT, 0,"** device will be restarted **");
+      delay(1000);
+      TelnetServerClients[0].stop();
+      ESP.restart();
+
+    // e
+    }else if(incomingByte==101){
+        Prn(OUT, 1,"List EEPROM [adr>value]");
+        for (int i=0; i<EEPROM_SIZE; i++){
+          if( (i<41)||(i>140&&i<208)||(i>212) ){  // hiden pass
+            Prn(OUT, 0, String(i));
+            Prn(OUT, 0, ">" );
+            Prn(OUT, 0, String(EEPROM.read(i)) );
+            Prn(OUT, 0, " " );
+          }
+        }
+        Prn(OUT, 1, "" );
 
     // *
     }else if(incomingByte==42){
@@ -1920,7 +1766,7 @@ void CLI(){
       if(EnableSerialDebug>2){
         EnableSerialDebug=0;
       }
-      Prn(OUT, 0,"** Serial DEBUG ");
+      Prn(OUT, 0,"** Terminal DEBUG ");
       if(EnableSerialDebug==0){
         Prn(OUT, 1,"DISABLE **");
       }else if(EnableSerialDebug==1){
@@ -1929,196 +1775,38 @@ void CLI(){
         Prn(OUT, 1,"ENABLE with frenetic mode **");
       }
 
-    // #
-    }else if(incomingByte==35 && TxUdpBuffer[2]!='n'){
-      if(EnableGroupPrefix==false){
-        Prn(OUT, 1,"Press NET-ID X_ prefix 0-f...");
-      }else{
-        Prn(OUT, 1,"Press NET-ID _X sufix 0-f...");
-      }
+    // E
+    }else if(incomingByte==69 && OUT==0){
+      Prn(OUT, 1,"  Erase whole eeprom (also telnet key)? (y/n)");
       EnterChar(OUT);
-      if( (incomingByte>=48 && incomingByte<=57) || (incomingByte>=97 && incomingByte<=102) ){
-        // prefix
-        if(EnableGroupPrefix==false){
-          bitClear(NET_ID, 4);
-          bitClear(NET_ID, 5);
-          bitClear(NET_ID, 6);
-          bitClear(NET_ID, 7);
-          Serial.write(incomingByte);
+      if(incomingByte==89 || incomingByte==121){
+        Prn(OUT, 1,"  Stop erase? (y/n)");
+        EnterChar(OUT);
+        if(incomingByte==78 || incomingByte==110){
+          for(int i=0; i<EEPROM_SIZE; i++){
+            EEPROM.write(i, 0xff);
+            Prn(OUT, 0,".");
+          }
+          EEPROM.commit();
           Prn(OUT, 1,"");
-          if(incomingByte>=48 && incomingByte<=57){
-            incomingByte = incomingByte-48;
-            incomingByte = (byte)incomingByte << 4;
-            NET_ID = NET_ID | incomingByte;
-            TxUdpBuffer[0] = NET_ID;
-          }else if(incomingByte>=97 && incomingByte<=102){
-            incomingByte = incomingByte-87;
-            incomingByte = (byte)incomingByte << 4;
-            NET_ID = NET_ID | incomingByte;
-            TxUdpBuffer[0] = NET_ID;
-          }
+          Prn(OUT, 1,"  Eeprom erased done");
+        }else{
+          Prn(OUT, 1,"  Erase aborted");
         }
-        // sufix
-        // if(HW_BCD_SW==false){
-          if(EnableGroupPrefix==false){
-            Prn(OUT, 1,"Press NET-ID _X sufix 0-f...");
-            EnterChar(OUT);
-          }
-          if( (incomingByte>=48 && incomingByte<=57) || (incomingByte>=97 && incomingByte<=102) ){
-            bitClear(NET_ID, 0);
-            bitClear(NET_ID, 1);
-            bitClear(NET_ID, 2);
-            bitClear(NET_ID, 3);
-            Serial.write(incomingByte);
-            Prn(OUT, 1, "");
-            if(incomingByte>=48 && incomingByte<=57){
-              incomingByte = incomingByte-48;
-              NET_ID = NET_ID | incomingByte;
-              TxUdpBuffer[0] = NET_ID;
-            }else if(incomingByte>=97 && incomingByte<=102){
-              incomingByte = incomingByte-87;
-              NET_ID = NET_ID | incomingByte;
-              TxUdpBuffer[0] = NET_ID;
-            }
-        // #endif
-            EEPROM.write(1, NET_ID); // address, value
-            EEPROM.commit();
-            Prn(OUT, 0,"** Now NET-ID change to 0x");
-            if(NET_ID <=0x0f){
-              Prn(OUT, 0, String("0"));
-            }
-            Prn(OUT, 0, String(NET_ID, HEX) );
-            Prn(OUT, 1," **");
-            if(EnableSerialDebug>0){
-              Prn(OUT, 0,"EEPROM read [");
-              Prn(OUT, 0, String(EEPROM.read(1), HEX) );
-              Prn(OUT, 1,"]");
-            }
-            TxUDP('s', packetBuffer[2], 'b', 'r', 'o', 0);    // 0=broadcast, 1= direct to RX IP
-            if(TxUdpBuffer[2] == 'm'){
-              TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-            }
-        // #if !defined(HW_BCD_SW)
-          }else{
-            Prn(OUT, 1," accepts 0-f, exit");
-          }
-        // #endif
-        // }
-      }else{
-        Prn(OUT, 1," accepts 0-f, exit");
-      }
-
-  // E
-}else if(incomingByte==69 && OUT==0){
-    Prn(OUT, 1,"  Erase whole eeprom (also telnet key)? (y/n)");
-    EnterChar(OUT);
-    if(incomingByte==89 || incomingByte==121){
-      Prn(OUT, 1,"  Stop erase? (y/n)");
-      EnterChar(OUT);
-      if(incomingByte==78 || incomingByte==110){
-        for(int i=0; i<EEPROM_SIZE; i++){
-          EEPROM.write(i, 0xff);
-          Prn(OUT, 0,".");
-        }
-        EEPROM.commit();
-        Prn(OUT, 1,"");
-        Prn(OUT, 1,"  Eeprom erased done");
       }else{
         Prn(OUT, 1,"  Erase aborted");
       }
-    }else{
-      Prn(OUT, 1,"  Erase aborted");
-    }
-
-    // C
-    // }else if(incomingByte==67){
-    //   Prn(OUT, 1,"  EEPROM.commit");
-    //   EEPROM.commit();
-
-    // $
-    // }else if(incomingByte==36){
-    //   EnableGroupPrefix=!EnableGroupPrefix;
-    //   Prn(OUT, 0,"** Group sufix (multi control) [");
-    //   EEPROM.write(4, EnableGroupPrefix);
-    //   EEPROM.commit();
-    //   if(EnableGroupPrefix==true){
-    //     Prn(OUT, 1,"ON] **");
-    //   }else{
-    //     Prn(OUT, 1,"OFF] **");
-    //   }
-    //   if(EnableGroupPrefix==true){
-    //     // clear prefix
-    //     bitClear(NET_ID, 4);
-    //     bitClear(NET_ID, 5);
-    //     bitClear(NET_ID, 6);
-    //     bitClear(NET_ID, 7); // <-
-    //   }
-    //   Prn(OUT, 1,"** IP switch will be restarted **");
-    //   delay(1000);
-    //   TelnetServerClients[0].stop();
-    //   ESP.restart();
 
     // .
     }else if(incomingByte==46){
       Prn(OUT, 1,"Reset timer and sent measure");
       MeasureTimer[0]=millis()-MeasureTimer[1];
 
-    // (
-    // }else if(incomingByte==40){
-    //   Prn(OUT, 1,"Write baudrate");
-    //   EnterInt(OUT);
-    //   if(CompareInt>=80 && CompareInt<=5000000){
-    //     SERIAL1_BAUDRATE = CompareInt;
-    //     EEPROM.writeInt(14, SERIAL1_BAUDRATE);
-    //     EEPROM.commit();
-    //     Prn(OUT, 0," Set ");
-    //     Prn(OUT, 1, String(SERIAL1_BAUDRATE) );
-    //     Prn(OUT, 0,"** device will be restarted **");
-    //     delay(1000);
-    //     TelnetServerClients[0].stop();
-    //     ESP.restart();
-    //   }else{
-    //     Prn(OUT, 0,"Out of range.");
-    //   }
-
-    // )
-    // }else if(incomingByte==41){
-    //   Prn(OUT, 1,"Write IP port (1-65535)");
-    //   EnterInt(OUT);
-    //   if(CompareInt>=1 && CompareInt<=65535){
-    //     SerialServerIPport = CompareInt;
-    //     EEPROM.writeInt(18, SerialServerIPport);
-    //     EEPROM.commit();
-    //     Prn(OUT, 0," Set ");
-    //     Prn(OUT, 1, String(SerialServerIPport) );
-    //     Prn(OUT, 0,"** device will be restarted **");
-    //     delay(1000);
-    //     TelnetServerClients[0].stop();
-    //     ESP.restart();
-    //   }else{
-    //     Prn(OUT, 0,"Out of range.");
-    //   }
-
-    // R
-    // }else if(incomingByte==82){
-    //   readFile(SD_MMC, "/wx-"+String(UtcTime(3))+".txt");
-
-    // / dir
-    // }else if(incomingByte==47){
-    //   listDir(SD_MMC, "/", 2);
-
     #if !defined(BMP280) && !defined(HTU21D)
       // 2
       }else if(incomingByte==50){
         I2cScanner();
     #endif
-
-    // &
-    // }else if(incomingByte==38 && TxUdpBuffer[2]!='n'){
-    //   TxUDP('s', packetBuffer[2], 'b', 'r', 'o', 0);    // 0=broadcast, 1= direct to RX IP
-    //   if(TxUdpBuffer[2] == 'm'){
-    //     TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-    //   }
 
     // q
     }else if(incomingByte==113 && TelnetServerClients[0].connected() ){
@@ -2156,8 +1844,27 @@ void CLI(){
       TelnetServerClients[0].stop();
       ESP.restart();
 
+    // ~K
+    // }else if(incomingByte==126){
+    //   EnterChar(OUT);
+    //   if(incomingByte==75){
+    //     Prn(OUT, 1,"");
+    //     Prn(OUT, 0," ");
+    //     for(int i=0; i<10; i++){
+    //       Prn(OUT, 0,"    ["+String(i*10+1)+"-"+String(i*10+10)+"]  ");
+    //       if(i<9){
+    //         Prn(OUT, 0," ");
+    //       }
+    //       for(int j=0; j<10; j++){
+    //         Prn(OUT, 0, String(key[i*10+j]));
+    //       }
+    //       Prn(OUT, 1,"");
+    //     }
+    //     Prn(OUT, 1,"");
+    //   }
+
     // L
-  }else if(incomingByte==76){
+    }else if(incomingByte==76){
       Prn(OUT, 0,"  Input new location (CALLSIGN-ssid) and press [");
       if(TelnetAuthorized==true){
         Prn(OUT, 0,"enter");
@@ -2180,8 +1887,8 @@ void CLI(){
       delay(1000);
       ESP.restart();
 
-  // A
-  }else if(incomingByte==65){
+    // A
+    }else if(incomingByte==65){
       if(AprsON==true){
         AprsON=false;
         Prn(OUT, 1,"** APRS DISABLE **");
@@ -2206,229 +1913,151 @@ void CLI(){
         }
       }
 
-  // i
-}else if(incomingByte==105 && AprsON==true){
-    Prn(OUT, 1,"  enter APRS i-gate IP address, by four number (0-255) and press [enter] after each");
-    Prn(OUT, 1,"  (for example 89.235.48.27:14580)");
-    for (int i=0; i<5; i++){
-      if(i==4){
-        Prn(OUT, 0,"enter IP port (1-65535) and press [");
-      }
-      if(TelnetAuthorized==true){
-        Prn(OUT, 1,"enter]");
-      }else{
-        Prn(OUT, 1,";]");
-      }
-      Enter();
-      int intBuf=0;
-      int mult=1;
-      for (int j=InputByte[0]; j>0; j--){
-        intBuf = intBuf + ((InputByte[j]-48)*mult);
-        // Prn(OUT, 1,"InputByte["+String(j)+"] "+String(InputByte[j])+"/"+String(InputByte[j]-48));
-        mult = mult*10;
-      }
-      // Prn(OUT, 1,"intBuf "+String(intBuf));
-      if( (i<4 && intBuf>=0 && intBuf<=255) || (i==4 && intBuf>=1 && intBuf<=65535) ){
-        if(i==4){
-          EEPROM.writeInt(204, intBuf);
+    // p
+    }else if(incomingByte==112 && AprsON==true){
+        Prn(OUT, 0,"  Input APRS i-gate password and press [");
+        if(TelnetAuthorized==true){
+          Prn(OUT, 1,"enter]");
         }else{
-          EEPROM.writeByte(200+i, intBuf);
+          Prn(OUT, 1,";]");
         }
-        // Prn(OUT, 1,"EEPROMcomit");
+        Enter();
+        AprsPassword="";
+        for (int i=1; i<6; i++){
+          AprsPassword=AprsPassword+char(InputByte[i]);
+          if(i<InputByte[0]+1){
+            EEPROM.write(207+i, InputByte[i]);
+          }else{
+            EEPROM.write(207+i, 0xff);
+          }
+        }
         EEPROM.commit();
-      }else{
-        Prn(OUT, 1,"Out of range.");
-        break;
-      }
-    }
-    for(int i=0; i<4; i++){
-      aprs_server_ip[i]=EEPROM.readByte(i+200);
-    }
-    AprsPort = EEPROM.readInt(204);
-    // Prn(OUT, 0,"** device will be restarted **");
-    // delay(1000);
-    // TelnetServerClients[0].stop();
-    // ESP.restart();
 
-  // p
-}else if(incomingByte==112 && AprsON==true){
-      Prn(OUT, 0,"  Input APRS i-gate password and press [");
-      if(TelnetAuthorized==true){
-        Prn(OUT, 1,"enter]");
-      }else{
-        Prn(OUT, 1,";]");
-      }
-      Enter();
-      AprsPassword="";
-      for (int i=1; i<6; i++){
-        AprsPassword=AprsPassword+char(InputByte[i]);
-        if(i<InputByte[0]+1){
-          EEPROM.write(207+i, InputByte[i]);
+      // c
+      }else if(incomingByte==99 && AprsON==true){
+        Prn(OUT, 1,"  ddmm.ssN/dddmm.ssE | dd-degrees | mm-minutes | ss-seconds | N-north, S-south.");
+        Prn(OUT, 1,"  for example 5108.41N/01259.35E");
+        Prn(OUT, 0,"  Input WX coordinates and press [");
+        if(TelnetAuthorized==true){
+          Prn(OUT, 1,"enter]");
         }else{
-          EEPROM.write(207+i, 0xff);
+          Prn(OUT, 1,";]");
         }
-      }
-      EEPROM.commit();
+        Enter();
+        AprsCoordinates="";
+        for (int i=1; i<19; i++){
+          AprsCoordinates=AprsCoordinates+char(InputByte[i]);
+          if(i<InputByte[0]+1){
+            EEPROM.write(212+i, InputByte[i]);
+          }else{
+            EEPROM.write(212+i, 0xff);
+          }
+        }
+        EEPROM.commit();
 
-  // c
-  }else if(incomingByte==99 && AprsON==true){
-      Prn(OUT, 1,"  ddmm.ssN/dddmm.ssE | dd-degrees | mm-minutes | ss-seconds | N-north, S-south.");
-      Prn(OUT, 1,"  for example 5108.41N/01259.35E");
-      Prn(OUT, 0,"  Input WX coordinates and press [");
-      if(TelnetAuthorized==true){
-        Prn(OUT, 1,"enter]");
-      }else{
-        Prn(OUT, 1,";]");
-      }
-      Enter();
-      AprsCoordinates="";
-      for (int i=1; i<19; i++){
-        AprsCoordinates=AprsCoordinates+char(InputByte[i]);
-        if(i<InputByte[0]+1){
-          EEPROM.write(212+i, InputByte[i]);
+      // m
+      }else if(incomingByte==109){
+        Prn(OUT, 0,"write your altitude in meter, and press [");
+        if(TelnetAuthorized==true){
+          Prn(OUT, 1,"enter]");
         }else{
-          EEPROM.write(212+i, 0xff);
+          Prn(OUT, 1,";]");
         }
-      }
-      EEPROM.commit();
+        Enter();
+        int intBuf=0;
+        int mult=1;
+        for (int j=InputByte[0]; j>0; j--){
+          // detect -
+          if(j==1 && InputByte[j]==45){
+            intBuf = 0-intBuf;
+          }else{
+            intBuf = intBuf + ((InputByte[j]-48)*mult);
+            mult = mult*10;
+          }
+        }
+        if(intBuf>=0 && intBuf<=7300){
+          Altitude = intBuf;
+          EEPROM.writeInt(231, Altitude); // address, value
+          EEPROM.commit();
+          Prn(OUT, 1," altitude "+String(EEPROM.readInt(231))+"m has been saved");
+        }else{
+          Prn(OUT, 1," Out of range");
+        }
 
-  // #if defined(DS18B20)
-  // // s
-  // }else if(incomingByte==115){
-  //   ExtTemp=!ExtTemp;
-  //     if(ExtTemp==true){
-  //       Prn(OUT, 1,"** External temp sensor ENABLE **");
-  //     }else{
-  //       Prn(OUT, 1,"** External temp sensor DISABLE **");
-  //     }
-  //       EEPROM.write(239, ExtTemp); // address, value
-  //       EEPROM.commit();
-  //
-  //   // s
-  //   // }else if(incomingByte==115){
-  //   //   Prn(OUT, 1,"  Input WX coordinates and press [enter] in format.");
-  //   // byte i;
-  //   // byte addr[8];
-  //   // if (!ds.search(addr)) {
-  //   //   Prn(OUT, 1,"  No more addresses.");
-  //   //   ds.reset_search();
-  //   //   delay(250);
-  //   //   return;
-  //   // }
-  //   // Prn(OUT, 0,"  ROM= ");
-  //   // for (i = 0; i < 8; i++) {
-  //   //   Prn(OUT, 0," ");
-  //   //   Prn(OUT, 0, String(addr[i], HEX));
-  //   // }
-  // #endif
+      // S
+      }else if(incomingByte==83){
+        Prn(OUT, 0,"write wind direction shift 0-359°, and press [");
+        if(TelnetAuthorized==true){
+          Prn(OUT, 1,"enter]");
+        }else{
+          Prn(OUT, 1,";]");
+        }
+        Enter();
+        int intBuf=0;
+        int mult=1;
+        for (int j=InputByte[0]; j>0; j--){
+          // detect -
+          if(j==1 && InputByte[j]==45){
+            intBuf = 0-intBuf;
+          }else{
+            intBuf = intBuf + ((InputByte[j]-48)*mult);
+            mult = mult*10;
+          }
+        }
+        if(intBuf>=0 && intBuf<=359){
+          WindDirShift = intBuf;
+          EEPROM.writeInt(240, WindDirShift); // address, value
+          EEPROM.commit();
+          Prn(OUT, 1," shift "+String(EEPROM.readInt(240))+"° has been saved");
+        }else{
+          Prn(OUT, 1," Out of range");
+        }
 
-// m
-}else if(incomingByte==109){
-    Prn(OUT, 0,"write your altitude in meter, and press [");
-    if(TelnetAuthorized==true){
-      Prn(OUT, 1,"enter]");
-    }else{
-      Prn(OUT, 1,";]");
-    }
-    Enter();
-    int intBuf=0;
-    int mult=1;
-    for (int j=InputByte[0]; j>0; j--){
-      // detect -
-      if(j==1 && InputByte[j]==45){
-        intBuf = 0-intBuf;
+    // W
+    }else if(incomingByte==87){
+      Prn(OUT, 1,"** Erase WindSpeedMax memory? [y/n] **");
+      EnterChar(OUT);
+      if(incomingByte==89 || incomingByte==121){
+        EEPROM.writeLong(169, 987654321);
+        EEPROM.writeByte(173, 255);
+        EEPROM.commit();
+        MqttPubString("WindSpeedMax-mps", "", true);
+        MqttPubString("WindSpeedMax-utc", "", true);
+        Prn(OUT, 1,"** IP switch will be restarted **");
+        delay(1000);
+        TelnetServerClients[0].stop();
+        ESP.restart();
       }else{
-        intBuf = intBuf + ((InputByte[j]-48)*mult);
-        mult = mult*10;
+        Prn(OUT, 1,"  bye");
       }
-    }
-    if(intBuf>=0 && intBuf<=7300){
-      Altitude = intBuf;
-      EEPROM.writeInt(231, Altitude); // address, value
-      EEPROM.commit();
-      Prn(OUT, 1," altitude "+String(EEPROM.readInt(231))+"m has been saved");
-    }else{
-      Prn(OUT, 1," Out of range");
-    }
 
-// S
-}else if(incomingByte==83){
-    Prn(OUT, 0,"write wind direction shift 0-359°, and press [");
-    if(TelnetAuthorized==true){
-      Prn(OUT, 1,"enter]");
-    }else{
-      Prn(OUT, 1,";]");
-    }
-    Enter();
-    int intBuf=0;
-    int mult=1;
-    for (int j=InputByte[0]; j>0; j--){
-      // detect -
-      if(j==1 && InputByte[j]==45){
-        intBuf = 0-intBuf;
-      }else{
-        intBuf = intBuf + ((InputByte[j]-48)*mult);
-        mult = mult*10;
-      }
-    }
-    if(intBuf>=0 && intBuf<=359){
-      WindDirShift = intBuf;
-      EEPROM.writeInt(240, WindDirShift); // address, value
-      EEPROM.commit();
-      Prn(OUT, 1," shift "+String(EEPROM.readInt(240))+"° has been saved");
-    }else{
-      Prn(OUT, 1," Out of range");
-    }
-
-// W
-}else if(incomingByte==87){
-    Prn(OUT, 1,"** Erase WindSpeedMax memory? [y/n] **");
-    EnterChar(OUT);
-    if(incomingByte==89 || incomingByte==121){
-      EEPROM.writeLong(169, 987654321);
-      EEPROM.writeByte(173, 255);
-      EEPROM.commit();
-      MqttPubString("WindSpeedMax-mps", "", true);
-      MqttPubString("WindSpeedMax-utc", "", true);
-      Prn(OUT, 1,"** IP switch will be restarted **");
-      delay(1000);
-      TelnetServerClients[0].stop();
-      ESP.restart();
-    }else{
-      Prn(OUT, 1,"  bye");
-    }
-
-// a
-}else if(incomingByte==97){
-    Prn(OUT, 0,"write limit for wind speed alert 0-60 m/s, and press [");
-    if(TelnetAuthorized==true){
-      Prn(OUT, 1,"enter]");
-    }else{
-      Prn(OUT, 1,";]");
-    }
-    Enter();
-    int intBuf=0;
-    int mult=1;
-    for (int j=InputByte[0]; j>0; j--){
-      // detect -
-      if(j==1 && InputByte[j]==45){
-        intBuf = 0-intBuf;
-      }else{
-        intBuf = intBuf + ((InputByte[j]-48)*mult);
-        mult = mult*10;
-      }
-    }
-    if(intBuf>=0 && intBuf<=60){
-      SpeedAlertLimit_ms = MpsToMs(intBuf);
-      EEPROM.writeInt(235, SpeedAlertLimit_ms); // address, value
-      EEPROM.commit();
-    }else{
-      Prn(OUT, 1," Out of range");
-    }
-
-    // LF
-    // }else if(incomingByte==10){
-    //   Prn(OUT, 1,"");
+// // a
+// }else if(incomingByte==97){
+//     Prn(OUT, 0,"write limit for wind speed alert 0-60 m/s, and press [");
+//     if(TelnetAuthorized==true){
+//       Prn(OUT, 1,"enter]");
+//     }else{
+//       Prn(OUT, 1,";]");
+//     }
+//     Enter();
+//     int intBuf=0;
+//     int mult=1;
+//     for (int j=InputByte[0]; j>0; j--){
+//       // detect -
+//       if(j==1 && InputByte[j]==45){
+//         intBuf = 0-intBuf;
+//       }else{
+//         intBuf = intBuf + ((InputByte[j]-48)*mult);
+//         mult = mult*10;
+//       }
+//     }
+//     if(intBuf>=0 && intBuf<=60){
+//       SpeedAlertLimit_ms = MpsToMs(intBuf);
+//       EEPROM.writeInt(235, SpeedAlertLimit_ms); // address, value
+//       EEPROM.commit();
+//     }else{
+//       Prn(OUT, 1," Out of range");
+//     }
 
     // CR/LF
     }else if(incomingByte==13||incomingByte==10){
@@ -2662,13 +2291,14 @@ void ListCommands(int OUT){
   if(OUT==0){
     Prn(OUT, 1,"");
     Prn(OUT, 1,"");
-    Prn(OUT, 1," ==========================");
-    Prn(OUT, 1," Please save the IP address");
-      Prn(OUT, 1, " "+String(ETH.localIP()[0])+"."+String(ETH.localIP()[1])+"."+String(ETH.localIP()[2])+"."+String(ETH.localIP()[3]) );
-      Prn(OUT, 1," --------------------------");
-    Prn(OUT, 1," And save telnet access key:");
+    Prn(OUT, 1," =============================================================");
+    Prn(OUT, 1," Please copy and save the IP address, MAC and telnet acces KEY");
     Prn(OUT, 1,"");
-    Prn(OUT, 1,"   [position] key");
+      Prn(OUT, 1, "   "+String(ETH.localIP()[0])+"."+String(ETH.localIP()[1])+"."+String(ETH.localIP()[2])+"."+String(ETH.localIP()[3]) );
+      Serial.print("   ");
+      Serial.println(MACString);
+    Prn(OUT, 1,"");
+    Prn(OUT, 1,"   [position]    key");
     Prn(OUT, 0," ");
     for(int i=0; i<10; i++){
       Prn(OUT, 0,"    ["+String(i*10+1)+"-"+String(i*10+10)+"]  ");
@@ -2680,18 +2310,10 @@ void ListCommands(int OUT){
       }
       Prn(OUT, 1,"");
     }
-    // Prn(OUT, 0,"    ");
-    //   for(int i=0; i<100; i++){
-    //     Prn(OUT, 0, String(key[i]));
-    //     if((i+1)%10==0){
-    //       Prn(OUT, 1,"");
-    //       Prn(OUT, 0,"    ");
-    //     }
-    //   }
     Prn(OUT, 1,"");
     Prn(OUT, 1," Then disconnect the USB, and log in using telnet");
     Prn(OUT, 1," More information https://remoteqth.com/w/doku.php?id=3d_print_wx_station#second_step_connect_remotely_via_ip");
-    Prn(OUT, 1," ==========================");
+    Prn(OUT, 1," =============================================================");
     Prn(OUT, 1,"");
   }
   else{
@@ -2701,7 +2323,8 @@ void ListCommands(int OUT){
       Prn(OUT, 0,"  http://");
       Prn(OUT, 1, String(ETH.localIP()[0])+"."+String(ETH.localIP()[1])+"."+String(ETH.localIP()[2])+"."+String(ETH.localIP()[3]) );
       Prn(OUT, 0,"  ETH: MAC ");
-      Prn(OUT, 0, String(ETH.macAddress()[0], HEX)+":"+String(ETH.macAddress()[1], HEX)+":"+String(ETH.macAddress()[2], HEX)+":"+String(ETH.macAddress()[3], HEX)+":"+String(ETH.macAddress()[4], HEX)+":"+String(ETH.macAddress()[5], HEX)+", " );
+      Prn(OUT, 0, MACString +", " );
+      // Prn(OUT, 0, String(ETH.macAddress()[0], HEX)+":"+String(ETH.macAddress()[1], HEX)+":"+String(ETH.macAddress()[2], HEX)+":"+String(ETH.macAddress()[3], HEX)+":"+String(ETH.macAddress()[4], HEX)+":"+String(ETH.macAddress()[5], HEX)+", " );
       Prn(OUT, 0, String(ETH.linkSpeed()) );
       Prn(OUT, 0,"Mbps");
       if (ETH.fullDuplex()) {
@@ -2771,7 +2394,9 @@ void ListCommands(int OUT){
       }
 
     Prn(OUT, 0,"  Firmware: ");
-    Prn(OUT, 1, String(REV));
+    Prn(OUT, 0, String(REV));
+    Prn(OUT, 0," | Hardware: ");
+    Prn(OUT, 1, String(HWREV));
 
 
     // Prn(OUT, 0,"  micro SD card present: ");
@@ -2790,17 +2415,32 @@ void ListCommands(int OUT){
     //     Prn(OUT, 1,"unknown ");
     // }
     Prn(OUT, 1,"-----------------  Sensors  -----------------");
-    Prn(OUT, 0,"  Rain1Pin ");
-      Prn(OUT, 0,String(digitalRead(Rain1Pin)));
-    Prn(OUT, 0,"|Rain2Pin ");
-      Prn(OUT, 0,String(digitalRead(Rain2Pin)));
-    // Prn(OUT, 0," | ButtonPin ");
-    //   Prn(OUT, 1, String(digitalRead(ButtonPin)));
-    if(digitalRead(Rain1Pin)==digitalRead(Rain2Pin)){
-      Prn(OUT, 1,"|sensor malformed!" );
-    }else{
+    #if HWREV==8
+      int intBuf = analogRead(RainPin);
+      Prn(OUT, 0,"  RainPin raw "+String(analogRead(intBuf)));
+      if(intBuf<1000){
+        Prn(OUT, 0," > false");
+      }else if(intBuf>=1000 && intBuf<=2000){
+        Prn(OUT, 0," > true");
+      }else if(intBuf>2000){
+        Prn(OUT, 0," > malformed");
+      }
       Prn(OUT, 1,"|"+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+"|"+String(RainPulseToMM(RainCount))+"mm|"+String(mmInPulse)+" rain mm per pulse" );
-    }
+    #endif
+
+    #if HWREV==7
+      Prn(OUT, 0,"  Rain1Pin ");
+      Prn(OUT, 0,String(digitalRead(Rain1Pin)));
+      Prn(OUT, 0,"|Rain2Pin ");
+      Prn(OUT, 0,String(digitalRead(Rain2Pin)));
+      // Prn(OUT, 0," | ButtonPin ");
+      //   Prn(OUT, 1, String(digitalRead(ButtonPin)));
+      if(digitalRead(Rain1Pin)==digitalRead(Rain2Pin)){
+        Prn(OUT, 1,"|sensor malformed!" );
+      }else{
+        Prn(OUT, 1,"|"+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+"|"+String(RainPulseToMM(RainCount))+"mm|"+String(mmInPulse)+" rain mm per pulse" );
+      }
+    #endif
     // if(EnableSerialDebug>0){
     // }else{
     // }
@@ -2965,7 +2605,7 @@ void ListCommands(int OUT){
         Prn(OUT, 1,"OFF]");
       }
     }
-    Prn(OUT, 0,"      *  serial debug ");
+    Prn(OUT, 0,"      *  terminal debug ");
       if(EnableSerialDebug==0){
         Prn(OUT, 1,"[OFF]");
       }else if(EnableSerialDebug==1){
@@ -3675,11 +3315,10 @@ void http(){
           }
           webClient.print(F(" | version: "));
           webClient.println(REV);
+          webClient.print(F(" | PCB: "));
+          webClient.println(HWREV);
           webClient.print(F(" | eth mac: "));
-          for (int i = 0; i < 6; i++) {
-            webClient.print(ETH.macAddress()[i], HEX);
-            webClient.print(F(":"));
-          }
+          webClient.print(MACString);
           webClient.println();
 
           webClient.print(F(" | dhcp: "));
@@ -3910,8 +3549,10 @@ void EthEvent(WiFiEvent_t event)
       break;
     // case SYSTEM_EVENT_ETH_GOT_IP:
     case ARDUINO_EVENT_ETH_GOT_IP:
+      MACString = ETH.macAddress();
+      MACString.toCharArray( MACchar, 18 );
       Serial.print("ETH  MAC: ");
-      Serial.println(ETH.macAddress());
+      Serial.println(MACString);
       Serial.println("===============================");
       Serial.print("   IPv4: ");
       Serial.println(ETH.localIP());
@@ -3935,13 +3576,25 @@ void EthEvent(WiFiEvent_t event)
           mqttClient.setCallback(MqttRx);
           lastMqttReconnectAttempt = 0;
 
+          // EEPROM YOUR_CALL
+          if(EEPROM.read(141)==0xff){
+            YOUR_CALL=MACString;
+            YOUR_CALL.remove(0, 12);
+          }else{
+            for (int i=141; i<161; i++){
+              if(EEPROM.read(i)!=0xff){
+                YOUR_CALL=YOUR_CALL+char(EEPROM.read(i));
+              }
+            }
+          }
+
           char charbuf[50];
-           // memcpy( charbuf, ETH.macAddress(), 6);
-           ETH.macAddress().toCharArray(charbuf, 18);
-           // charbuf[6] = 0;
-          if (mqttClient.connect(charbuf)){
+           // // memcpy( charbuf, ETH.macAddress(), 6);
+           // ETH.macAddress().toCharArray(charbuf, 18);
+           // // charbuf[6] = 0;
+          if (mqttClient.connect(MACchar)){
             // Serial.println(charbuf);
-            Prn(3, 1, String(charbuf));
+            Prn(3, 1, String(MACchar));
             mqttReconnect();
             AfterMQTTconnect();
           }
@@ -3996,12 +3649,12 @@ void Mqtt(){
 //-------------------------------------------------------------------------------------------------------
 
 bool mqttReconnect() {
-  // charbuf[6] = 0;
   Prn(3, 0, "MQTT");
   char charbuf[50];
-  // memcpy( charbuf, ETH.macAddress(), 6);
-  ETH.macAddress().toCharArray(charbuf, 18);
-  if (mqttClient.connect(charbuf)) {
+  // // memcpy( charbuf, ETH.macAddress(), 6);
+  // ETH.macAddress().toCharArray(charbuf, 18);
+  // charbuf[6] = 0;
+  if (mqttClient.connect(MACchar)) {
     if(EnableSerialDebug>0){
       Prn(3, 0, "mqttReconnect-connected");
     }
@@ -4092,17 +3745,27 @@ void AfterMQTTconnect(){
         IPlocalAddrString.toCharArray( mqttTX, 50 );                          // to array
         String path2 = String(YOUR_CALL) + "/WX/ip";
         path2.toCharArray( mqttPath, 100 );
-          mqttClient.publish(mqttPath, mqttTX, true);
-            Serial.print("MQTT-TX ");
-            Serial.print(mqttPath);
-            Serial.print(" ");
-            Serial.println(mqttTX);
+        mqttClient.publish(mqttPath, mqttTX, true);
+          Serial.print("MQTT-TX ");
+          Serial.print(mqttPath);
+          Serial.print(" ");
+          Serial.println(mqttTX);
 
-        String MAClocalAddrString = ETH.macAddress();   // to string
-        MAClocalAddrString.toCharArray( mqttTX, 50 );                          // to array
+        // String MAClocalAddrString = ETH.macAddress();   // to string
+        // MAClocalAddrString.toCharArray( mqttTX, 50 );                          // to array
         path2 = String(YOUR_CALL) + "/WX/mac";
         path2.toCharArray( mqttPath, 100 );
-          mqttClient.publish(mqttPath, mqttTX, true);
+        mqttClient.publish(mqttPath, MACchar, true);
+          Serial.print("MQTT-TX ");
+          Serial.print(mqttPath);
+          Serial.print(" ");
+          Serial.println(MACchar);
+
+        // String pcbString = String(HWREV);   // to string
+        // pcbString.toCharArray( mqttTX, 2 );                          // to array
+        // path2 = String(YOUR_CALL) + "/WX/pcb";
+        // path2.toCharArray( mqttPath, 100 );
+        //   mqttClient.publish(mqttPath, mqttTX, true);
             // Serial.print("MQTT-TX ");
             // Serial.print(mqttPath);
             // Serial.print(" ");
@@ -4116,13 +3779,13 @@ void AfterMQTTconnect(){
 //-----------------------------------------------------------------------------------
 void MqttPubString(String TOPIC, String DATA, bool RETAIN){
   char charbuf[50];
-   // memcpy( charbuf, mac, 6);
-   ETH.macAddress().toCharArray(charbuf, 10);
-   charbuf[6] = 0;
+   // // memcpy( charbuf, mac, 6);
+   // ETH.macAddress().toCharArray(charbuf, 10);
+   // charbuf[6] = 0;
   Interrupts(false);
   // if(EnableEthernet==1 && MQTT_ENABLE==1 && EthLinkStatus==1 && mqttClient.connected()==true){
   if(mqttClient.connected()==true){
-    if (mqttClient.connect(charbuf)) {
+    if (mqttClient.connect(MACchar)) {
       String topic = String(YOUR_CALL) + "/WX/"+TOPIC;
       topic.toCharArray( mqttPath, 50 );
       DATA.toCharArray( mqttTX, 50 );
