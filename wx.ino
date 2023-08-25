@@ -34,6 +34,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20230825 - add dew point, fix shift register, fix MQTT topic
 20230815 - recalibrate rain
 20221104 - calibrate rain
 20220910 - HW rev5, DS18B20 autodetect,
