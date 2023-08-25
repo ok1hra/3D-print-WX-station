@@ -58,6 +58,9 @@ Changelog:
 20200424 - add support for external 1-wire temperature ensor (DS18B20)
 
 ToDo
+- nastaveni HWREV do eeprom a kontrola proti verzi FW (nejde prepinat v runtime)
+- web setup
+- web selfcheck
 - Windy
   https://community.windy.com/topic/8168/report-your-weather-station-data-to-windy
   https://github.com/zpukr/esp8266-WindStation/blob/master/esp8266-WindStation.ino
@@ -96,8 +99,9 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20230825";
-#define HWREV 8                     // PCB version [7-8]
+const char* REV = "20230826";
+#define HWREVsw 8                   // software PCB version [7-8]
+unsigned char HWREVpcb = 0;          // PCB version must be compatible with HWREVsw
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
@@ -108,10 +112,10 @@ const char* REV = "20230825";
 #define ETHERNET                    // Enable ESP32 ethernet (DHCP IPv4)
 #define ETH_ADDR 0
 #define ETH_TYPE ETH_PHY_LAN8720
-#if HWREV==8
+#if HWREVsw==8
   #define ETH_POWER 0                // #define ETH_PHY_POWER 0 ./Arduino/hardware/espressif/esp32/variants/esp32-poe/pins_arduino.h
 #endif
-#if HWREV==7
+#if HWREVsw==7
   #define ETH_POWER 12                // mosfet on VDDIO
 #endif
 #define ETH_MDC 23                  // MDC pin17
@@ -218,6 +222,7 @@ int i = 0;
 0    -listen source
 1    -net ID
 2-3  - TempCal Short
+4    - HWREVpcb UChar
 
 -13
 14-17  - SERIAL1_BAUDRATE
@@ -395,10 +400,10 @@ byte ShiftOutByte[3];
 #endif
 
 const int RpmPin = 39;
-#if HWREV==8
+#if HWREVsw==8
   const int RainPin = 36;
 #endif
-#if HWREV==7
+#if HWREVsw==7
   const int Rain1Pin = 36;
   const int Rain2Pin = 35;
 #endif
@@ -479,10 +484,10 @@ String AprsCoordinates;
   #include <OneWire.h>
   #include <DallasTemperature.h>
   // Data wire is plugged into port 2 on the Arduino
-  #if HWREV==8
+  #if HWREVsw==8
     #define ONE_WIRE_BUS 2
   #endif
-  #if HWREV==7
+  #if HWREVsw==7
     #define ONE_WIRE_BUS 13
   #endif
   #define TEMPERATURE_PRECISION 9 // 9-12
@@ -507,10 +512,10 @@ void setup() {
   // for (int i = 0; i < 8; i++) {
   //   pinMode(TestPin[i], INPUT);
   // }
-  #if HWREV==8
+  #if HWREVsw==8
     pinMode(RainPin, INPUT);
   #endif
-  #if HWREV==7
+  #if HWREVsw==7
     pinMode(Rain1Pin, INPUT);
     pinMode(Rain2Pin, INPUT);
   #endif
@@ -680,7 +685,10 @@ void setup() {
     TempCal = -1.65;
   }
 
-
+  // 4 HWREVpcb UChar
+  if(EEPROM.readByte(4)!=255){
+    HWREVpcb = EEPROM.readUChar(4);
+  }
 
   SERIAL1_BAUDRATE=EEPROM.readInt(14);
   SerialServerIPport=EEPROM.readInt(18);
@@ -910,7 +918,7 @@ void setup() {
   // TelnetlServer.setNoDelay(true);
 
 
-  #if HWREV==8
+  #if HWREVsw==8
     int intBuf = analogRead(RainPin);
     if(intBuf<1000){
       RainStatus=false;
@@ -918,7 +926,7 @@ void setup() {
       RainStatus=true;
     }
   #endif
-  #if HWREV==7
+  #if HWREVsw==7
     if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
       RainStatus=false;
     }else if(digitalRead(Rain1Pin)==1 && digitalRead(Rain2Pin)==0){
@@ -1162,7 +1170,7 @@ void Watchdog(){
 
   // Rain counter 5sec
   if(millis()-RainTimer[0]>RainTimer[1]){
-    #if HWREV==8
+    #if HWREVsw==8
       if(EnableSerialDebug>1){Prn(3, 1,"*RainStatus "+String(RainStatus)+"|RainCount "+String(RainCount)+"|"+String(UtcTime(1)));}
       int intBuf = analogRead(RainPin);
       if(intBuf<1000){
@@ -1186,7 +1194,7 @@ void Watchdog(){
       }
     #endif
 
-    #if HWREV==7
+    #if HWREVsw==7
       if(EnableSerialDebug>1){Prn(3, 1,"*RainStatus "+String(RainStatus)+"|RainCount "+String(RainCount)+"|"+String(UtcTime(1)));}
       // digitalWrite(EnablePin,1);
       if(digitalRead(Rain1Pin)==0 && digitalRead(Rain2Pin)==1){
@@ -1994,6 +2002,39 @@ void CLI(){
           Prn(OUT, 1," Out of range");
         }
 
+      // H
+    }else if(incomingByte==72){
+        if(HWREVpcb==0){
+          Prn(OUT, 0,"define version of PCB, and press [");
+          if(TelnetAuthorized==true){
+            Prn(OUT, 1,"enter]");
+          }else{
+            Prn(OUT, 1,";]");
+          }
+          Enter();
+          int intBuf=0;
+          int mult=1;
+          for (int j=InputByte[0]; j>0; j--){
+            // detect -
+            if(j==1 && InputByte[j]==45){
+              intBuf = 0-intBuf;
+            }else{
+              intBuf = intBuf + ((InputByte[j]-48)*mult);
+              mult = mult*10;
+            }
+          }
+          // >7
+          if(intBuf>=6 && intBuf<=255){
+            HWREVpcb = intBuf;
+            EEPROM.writeUChar(4, HWREVpcb); // address, value
+            EEPROM.commit();
+            Prn(OUT, 1," PCB version "+String(EEPROM.readUChar(4))+" has been saved");
+          }else{
+            Prn(OUT, 1," Out of range");
+          }
+        }
+
+
       // C
       }else if(incomingByte==67){
         Prn(OUT, 0,"write temperature shift in C°, and press [");
@@ -2405,8 +2446,11 @@ void ListCommands(int OUT){
 
     Prn(OUT, 0,"  Firmware: ");
     Prn(OUT, 0, String(REV));
-    Prn(OUT, 0," | Hardware: ");
-    Prn(OUT, 1, String(HWREV));
+    Prn(OUT, 0," | PCB: ");
+    Prn(OUT, 0, String(HWREVsw));
+    Prn(OUT, 0," sw | ");
+    Prn(OUT, 0, String(HWREVpcb));
+    Prn(OUT, 1," pcb");
 
 
     // Prn(OUT, 0,"  micro SD card present: ");
@@ -2425,7 +2469,7 @@ void ListCommands(int OUT){
     //     Prn(OUT, 1,"unknown ");
     // }
     Prn(OUT, 1,"-----------------  Sensors  -----------------");
-    #if HWREV==8
+    #if HWREVsw==8
       int intBuf = analogRead(RainPin);
       Prn(OUT, 0,"  RainPin raw "+String(analogRead(intBuf)));
       if(intBuf<1000){
@@ -2438,7 +2482,7 @@ void ListCommands(int OUT){
       Prn(OUT, 1,"|"+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+"|"+String(RainPulseToMM(RainCount))+"mm|"+String(mmInPulse)+" rain mm per pulse" );
     #endif
 
-    #if HWREV==7
+    #if HWREVsw==7
       Prn(OUT, 0,"  Rain1Pin ");
       Prn(OUT, 0,String(digitalRead(Rain1Pin)));
       Prn(OUT, 0,"|Rain2Pin ");
@@ -2526,32 +2570,6 @@ void ListCommands(int OUT){
     //   Prn(OUT, 1," | size "+String(printf("%lluMB", cardSize)));
     // }
     Prn(OUT, 1,"------------------  Menu  -------------------");
-    // Prn(OUT, 1,"  You can change source, with send character:");
-    // if(TxUdpBuffer[2]=='m'){
-    //   Prn(OUT, 0,"     [m]");
-    // }else{
-    //   Prn(OUT, 0,"      m ");
-    // }
-    // Prn(OUT, 1,"- IP switch master");
-    // if(TxUdpBuffer[2]=='r'){
-    //   Prn(OUT, 0,"     [r]");
-    // }else{
-    //   Prn(OUT, 0,"      r ");
-    // }
-    // Prn(OUT, 1,"- Band decoder");
-    // if(TxUdpBuffer[2]=='o'){
-    //   Prn(OUT, 0,"     [o]");
-    // }else{
-    //   Prn(OUT, 0,"      o ");
-    // }
-    // Prn(OUT, 1,"- Open Interface III");
-    // if(TxUdpBuffer[2]=='n'){
-    //   Prn(OUT, 0,"     [n]");
-    // }else{
-    //   Prn(OUT, 0,"      n ");
-    // }
-    // Prn(OUT, 1,"- none");
-    // Prn(OUT, 1,"");
     Prn(OUT, 1,"      ?  list status and commands");
     Prn(OUT, 0,"      m  Altitude [");
     Prn(OUT, 0, String(Altitude)+" m]");
@@ -2601,23 +2619,6 @@ void ListCommands(int OUT){
       }
       Prn(OUT, 1,"");
     }
-    // if(TxUdpBuffer[2] == 'm'){
-    //   Prn(OUT, 0,"      /  set encoder range - now [");
-    //   Prn(OUT, 0, String(NumberOfEncoderOutputs+1) );
-    //   if(NumberOfEncoderOutputs>7){
-    //     Prn(OUT, 1,"] (two bank)");
-    //   }else{
-    //     Prn(OUT, 1,"]");
-    //   }
-    //   Prn(OUT, 0,"      %  group buttons (select one from group) [");
-    //   if(EnableGroupButton==true){
-    //     Prn(OUT, 1,"ON]");
-    //     Prn(OUT, 1,"         !  SET group buttons");
-    //     Prn(OUT, 1,"         :  list group buttons");
-    //   }else{
-    //     Prn(OUT, 1,"OFF]");
-    //   }
-    // }
     Prn(OUT, 0,"      *  terminal debug ");
       if(EnableSerialDebug==0){
         Prn(OUT, 1,"[OFF]");
@@ -2626,60 +2627,6 @@ void ListCommands(int OUT){
       }else if(EnableSerialDebug==2){
         Prn(OUT, 1,"[ON-frenetic]");
       }
-    // if(TxUdpBuffer[2]!='n'){
-    //   Prn(OUT, 0,"      #  network ID prefix [");
-    //   byte ID = NET_ID;
-    //   bitClear(ID, 0); // ->
-    //   bitClear(ID, 1);
-    //   bitClear(ID, 2);
-    //   bitClear(ID, 3);
-    //   ID = ID >> 4;
-    //   if(EnableGroupPrefix==true && TxUdpBuffer[2]=='m'){
-    //     Prn(OUT, 0,"x");
-    //   }else{
-    //     Prn(OUT, 0, String(ID, HEX) );
-    //   }
-    //   Prn(OUT, 0,"] hex");
-    //   if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-    //     Prn(OUT, 0," (set only on controllers)");
-    //   }
-    //   Prn(OUT, 1,"");
-    //
-    //   // if(HW_BCD_SW==false){
-    //     ID = NET_ID;
-    //     bitClear(ID, 4);
-    //     bitClear(ID, 5);
-    //     bitClear(ID, 6);
-    //     bitClear(ID, 7); // <-
-    //     Prn(OUT, 0,"         +network ID sufix [");
-    //     Prn(OUT, 0, String(ID, HEX) );
-    //     Prn(OUT, 0,"] hex");
-    //     if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-    //       Prn(OUT, 0," (multi control group - same at all)");
-    //     }
-    //     Prn(OUT, 1,"");
-    //   // }
-    //
-    //   if(TxUdpBuffer[2]=='m'){
-    //     Prn(OUT, 0,"      $  group network ID prefix (multi control) [");
-    //     if(EnableGroupPrefix==true){
-    //       Prn(OUT, 1,"ON]");
-    //     }else{
-    //       Prn(OUT, 1,"OFF]");
-    //     }
-    //   }
-    //   if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-    //     Prn(OUT, 1,"      .  list detected IP switch (multi control)");
-    //   }
-    // }
-    #if defined(Ser2net)
-      Prn(OUT, 0,"      (  change serial1 baudrate [");
-      Prn(OUT, 0, String(SERIAL1_BAUDRATE) );
-      Prn(OUT, 1,"]");
-      Prn(OUT, 0,"      )  change ser2net IP port [");
-      Prn(OUT, 0, String(SerialServerIPport) );
-      Prn(OUT, 1,"]");
-    #endif
 
     Prn(OUT, 1, "      +  change MQTT broker IP | "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT));
     // Prn(OUT, 0, String(mqtt_server_ip));
@@ -2732,6 +2679,9 @@ void ListCommands(int OUT){
     Prn(OUT, 1,"      .  reset timer and send measure");
     Prn(OUT, 1,"      W  erase wind speed max memory");
     Prn(OUT, 1,"      @  restart device");
+    if(HWREVpcb==0){
+      Prn(OUT, 1,"      H  *** DEFINE VERSION OF PCB ***");
+    }
     // Prn(OUT, 1,"---------------------------------------------");
     Prn(OUT, 0, " > " );
   }
@@ -3328,8 +3278,17 @@ void http(){
           }
           webClient.print(F(" | version: "));
           webClient.println(REV);
-          webClient.print(F(" | PCB: "));
-          webClient.println(HWREV);
+          webClient.print(F(" | <span"));
+            if(HWREVpcb!=HWREVsw){
+              webClient.print(F(" style='color:red; font-weight:bold;'"));
+            }
+          webClient.print(F("> PCB:</span> "));
+          webClient.print(HWREVsw);
+            if(HWREVpcb!=HWREVsw){
+              webClient.print(F("sw "));
+              webClient.print(HWREVpcb);
+              webClient.print(F("pcb"));
+            }
           webClient.print(F(" | eth mac: "));
           webClient.print(MACString);
           webClient.println();
@@ -3736,7 +3695,7 @@ void AfterMQTTconnect(){
           Serial.print(" ");
           Serial.println(MACchar);
 
-        // String pcbString = String(HWREV);   // to string
+        // String pcbString = String(HWREVsw);   // to string
         // pcbString.toCharArray( mqttTX, 2 );                          // to array
         // path2 = String(YOUR_CALL) + "/WX/pcb";
         // path2.toCharArray( mqttPath, 100 );
