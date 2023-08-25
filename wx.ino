@@ -34,6 +34,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20230815 - recalibrate rain
 20221104 - calibrate rain
 20220910 - HW rev5, DS18B20 autodetect,
 20220429 - add html preview page on port 88
@@ -94,6 +95,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
+const char* REV = "20230825";
 #define HWREV 8                     // PCB version [7-8]
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
@@ -123,7 +125,6 @@ const char* ssid     = "";
 const char* password = "";
 const float FunelDiaInCM = 10.0; // cm funnel diameter
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20230226";
 // unsigned long TimerTemp;
 
 // interrupts
@@ -143,7 +144,8 @@ bool RainStatus;
 10ml = 11,5 pulses = 0,87ml/pulse   <- constanta tilting measuring cup
 */
 // float mmInPulse = 0.87/(3.14*(FunelDiaInCM/2)*(FunelDiaInCM/2)/10); // calculate rain mm, in one pulse
-float mmInPulse = 0.2 ; // callibration rain 17,7-20,2 mm with 95 pulse
+// float mmInPulse = 0.2 ; // callibration rain 17,7-20,2 mm with 95 pulse
+float mmInPulse = 0.65 ; // measure 3.8mm, reference 12.2mm
 
 int WindDir = 0;
 int WindDirShift = 0;
@@ -157,6 +159,7 @@ String MinRpmPulseTimestamp;
 unsigned int RpmSpeed = 0;
 unsigned long RpmAverage[2]={1,0};  // counter,sum time
 bool RpmInterrupt = false;
+float TempCal=0;
 
 int SpeedAlertLimit_ms = 0;
 int SpeedAlert_ms = 3000;
@@ -172,7 +175,7 @@ long WdtTimer=0;
 byte InputByte[21];
 // #define Ser2net                  // Serial to ip proxy - DISABLE if board revision 0.3 or lower
 #define EnableOTA                // Enable flashing ESP32 Over The Air
-int NumberOfEncoderOutputs = 8;  // 2-16
+// int NumberOfEncoderOutputs = 8;  // 2-16
 byte NET_ID = 0x00;              // Unique ID number [0-F] hex format
 int EnableSerialDebug     = 0;
 long FreneticModeTimer ;
@@ -181,9 +184,9 @@ int IncomingSwitchUdpPort;
 #define ShiftOut                 // Enable ShiftOut register
 #define UdpAnswer                // Send UDP answer confirm packet
 int BroadcastPort;               // destination broadcast packet port
-bool EnableGroupPrefix = 0;      // enable multi controller control
-bool EnableGroupButton = 0;      // group to one from
-unsigned int GroupButton[8]={1,2,3,4,5,6,7,8};
+// bool EnableGroupPrefix = 0;      // enable multi controller control
+// bool EnableGroupButton = 0;      // group to one from
+// unsigned int GroupButton[8]={1,2,3,4,5,6,7,8};
 byte DetectedRemoteSw[16][4];
 unsigned int DetectedRemoteSwPort[16];
 
@@ -196,13 +199,26 @@ int i = 0;
 #include <WiFiUdp.h>
 #include "EEPROM.h"
 #define EEPROM_SIZE 244   /*
+0|Byte    1|128
+1|Char    1|A
+2|UChar   1|255
+3|Short   2|-32768
+5|UShort  2|65535
+7|Int     4|-2147483648
+11|Uint    4|4294967295
+15|Long    4|-2147483648
+19|Ulong   4|4294967295
+23|Long64  8|0x00FFFF8000FF4180
+31|Ulong64 8|0x00FFFF8000FF4180
+39|Float   4|1234.1234
+43|Double  8|123456789.12345679
+51|Bool    1|1
+
 0    -listen source
 1    -net ID
-2    -encoder range
-3    -HW_BCD_SW
-4    -EnableGroupPrefix
-5    -EnableGroupButton
-6-13 -GroupButton
+2-3  - TempCal Short
+
+-13
 14-17  - SERIAL1_BAUDRATE
 18-21 - SerialServerIPport
 22-25 - IncomingSwitchUdpPort
@@ -505,6 +521,7 @@ void setup() {
   // pinMode(ButtonPin, INPUT);
   // SHIFT IN
   pinMode(ShiftInLatchPin, OUTPUT);
+    digitalWrite(ShiftInLatchPin,1);
   pinMode(ShiftInClockPin, OUTPUT);
   pinMode(ShiftInDataPin, INPUT);
 
@@ -655,32 +672,14 @@ void setup() {
       NET_ID = EEPROM.read(1);
       TxUdpBuffer[0] = NET_ID;
 
-  // 2-encoder range
-  NumberOfEncoderOutputs = EEPROM.read(2);
-  if(NumberOfEncoderOutputs < 2 || NumberOfEncoderOutputs > 0x0f){
-    NumberOfEncoderOutputs=8;
+  // 2-3 TempCal Short
+  if(EEPROM.readByte(2)!=255){
+    TempCal = (float)EEPROM.readShort(2)/10.0;
+  }else{
+    TempCal = -1.65;
   }
 
-  // 4-EnableGroupPrefix
-  // Serial.print("Enable group NET-ID prefix ");
-  if(EEPROM.read(4)<2){
-    EnableGroupPrefix=EEPROM.read(4);
-  }
-  // Serial.println(EnableGroupPrefix);
 
-  // 5-EnableGroupButton
-  if(EEPROM.read(5)<2){
-    EnableGroupButton=EEPROM.read(5);
-  }
-
-  // 6-13 ButtonGroup
-  if(EnableGroupButton==true){
-    for (int i = 0; i < 8; i++) {
-      if(EEPROM.read(6+i)<9){
-        GroupButton[i]=EEPROM.read(6+i);
-      }
-    }
-  }
 
   SERIAL1_BAUDRATE=EEPROM.readInt(14);
   SerialServerIPport=EEPROM.readInt(18);
@@ -794,35 +793,6 @@ void setup() {
   // 240-243 WindDirShift
   if(EEPROM.readByte(240)!=255){
     WindDirShift = EEPROM.readInt(240);
-  }
-
-  if(EnableSerialDebug>0){
-    Serial.println();
-    Serial.print("Version: ");
-    Serial.println(REV);
-    Serial.println("===============================");
-    Serial.print("SLAVE DEVICE NET-ID: 0x");
-    if(NET_ID <=0x0f){
-      Serial.print(F("0"));
-    }
-    Serial.println(NET_ID, HEX);
-    Serial.print("Listen MASTER: ");
-    if(TxUdpBuffer[2] == 'o'){
-      Serial.println("Open Interface III");
-    }
-    if(TxUdpBuffer[2] == 'r' ){
-      Serial.println("Band decoder MK2");
-    }
-    if(TxUdpBuffer[2] == 'm' ){
-      Serial.println("IP switch master");
-    }
-    if(TxUdpBuffer[2] == 'n' ){
-      Serial.println("none");
-    }
-    Serial.println("===============================");
-    Serial.println("  press '?' for list commands");
-    Serial.println();
-    Serial.println();
   }
 
   #if defined(WIFI)
@@ -1264,58 +1234,8 @@ void Watchdog(){
       RainCount=0;
       RainCountDayOfMonth=UtcTime(2);
     }
-    String StringUtc1 = UtcTime(1);
-    MqttPubString("utc", StringUtc1, false);
-    Azimuth();
-    MqttPubString("WindDir-azimuth", String(WindDir), false);
 
-    // MqttPubString("WindSpeedLast", String(RpmPulse)+" "+StringUtc1, false);
-    MqttPubString("WindSpeedAvg-mps", String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])), false);
-    if(PeriodMinRpmPulse<987654321){
-      MqttPubString("WindSpeedMaxPeriod-mps", String(PulseToMetterBySecond(PeriodMinRpmPulse)), false);
-      MqttPubString("WindSpeedMaxPeriod-utc", String(PeriodMinRpmPulseTimestamp), false);
-    }
-    // MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), true);
-    // MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
-
-    #if defined(BMP280)
-      if(BMP280enable==true){
-        MqttPubString("Pressure-hPa-BMP280", String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100), false);
-        MqttPubString("TemperatureBak-Celsius-BMP280", String(bmp.readTemperature()), false);
-      }else{
-        MqttPubString("Pressure-hPa-BMP280", "n/a", false);
-        // MqttPubString("TemperatureBak-Celsius", "n/a", false);
-      }
-    #endif
-    #if defined(HTU21D)
-      if(HTU21Denable==true){
-        MqttPubString("HumidityRel-Percent-HTU21D", String(constrain(htu.readHumidity(), 0, 100)), false);
-        MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()), false);
-      }else{
-        MqttPubString("HumidityRel-Percent-HTU21D", "n/a", false);
-        // MqttPubString("Temperature-Celsius", "n/a", false);
-      }
-    #endif
-    #if defined(DS18B20)
-      if(ExtTemp==true){
-        sensors.requestTemperatures();
-        // float temperatureC = sensors.getTempCByIndex(0);
-        float temperatureC = sensors.getTempC(insideThermometer);
-        MqttPubString("Temperature-Celsius-DS18B20", String(temperatureC), false);
-      }else{
-        MqttPubString("Temperature-Celsius-DS18B20", "n/a", false);
-        // MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()), false);
-      }
-    #endif
-
-    #if defined(RF69_EXTERNAL_SENSOR)
-      if(temp_radio.toInt()>0 && humidity_radio.toInt()>0 && vbat_radio.toInt()>0 && RF69enable==true){
-        MqttPubString("RF-Temperature-Celsius", temp_radio, false);
-        MqttPubString("RF-HumidityRel-Percent", humidity_radio, false);
-        MqttPubString("RF-BattVoltage", vbat_radio, false);
-      }
-    #endif
-
+    MqttPubValue();
     AprsWxIgate();
 
     RpmAverage[0]=1;
@@ -1335,6 +1255,66 @@ void Watchdog(){
   }
 
 }
+
+
+void MqttPubValue(){
+
+  String StringUtc1 = UtcTime(1);
+  MqttPubString("utc", StringUtc1, false);
+  Azimuth();
+  MqttPubString("WindDir-azimuth", String(WindDir), false);
+
+  MqttPubString("RainCount", String(RainCount)+" (day "+String(UtcTime(2))+")", false);
+  MqttPubString("RainToday-mm", String(RainPulseToMM(RainCount)), false);
+
+  MqttPubString("WindSpeedAvg-mps", String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])), false);
+  if(PeriodMinRpmPulse<987654321){
+    MqttPubString("WindSpeedMaxPeriod-mps", String(PulseToMetterBySecond(PeriodMinRpmPulse)), false);
+    MqttPubString("WindSpeedMaxPeriod-utc", String(PeriodMinRpmPulseTimestamp), false);
+  }else{
+    MqttPubString("WindSpeedMaxPeriod-mps", "0", false);
+  }
+
+  #if defined(BMP280)
+    if(BMP280enable==true){
+      MqttPubString("Pressure-hPa-BMP280", String(Babinet(double(bmp.readPressure()), double((htu.readTemperature()+TempCal)*1.8+32))/100), false);
+      MqttPubString("Temperature-Celsius-BMP280", String(bmp.readTemperature()+TempCal), false);
+    }else{
+      MqttPubString("Pressure-hPa-BMP280", "n/a", false);
+      // MqttPubString("TemperatureBak-Celsius", "n/a", false);
+    }
+  #endif
+  #if defined(DS18B20)
+    if(ExtTemp==true){
+      sensors.requestTemperatures();
+      // float temperatureC = sensors.getTempCByIndex(0);
+      float temperatureC = sensors.getTempC(insideThermometer);
+      MqttPubString("Temperature-Celsius-DS18B20", String(temperatureC), false);
+    }else{
+      MqttPubString("Temperature-Celsius-DS18B20", "n/a", false);
+      // MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
+    }
+  #endif
+
+  #if defined(RF69_EXTERNAL_SENSOR)
+    if(temp_radio.toInt()>0 && humidity_radio.toInt()>0 && vbat_radio.toInt()>0 && RF69enable==true){
+      MqttPubString("RF-Temperature-Celsius", temp_radio, false);
+      MqttPubString("RF-HumidityRel-Percent", humidity_radio, false);
+      MqttPubString("RF-BattVoltage", vbat_radio, false);
+    }
+  #endif
+  #if defined(HTU21D)
+  if(HTU21Denable==true){
+    MqttPubString("HumidityRel-Percent-HTU21D", String(constrain(htu.readHumidity(), 0, 100)), false);
+    MqttPubString("DewPoint-Celsius-HTU21D", String( (htu.readTemperature()+TempCal) - (100.0 - constrain(htu.readHumidity(), 0, 100)) / 5.0), false);
+    MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
+  }else{
+    MqttPubString("HumidityRel-Percent-HTU21D", "n/a", false);
+    // MqttPubString("Temperature-Celsius", "n/a", false);
+  }
+  #endif
+}
+
 
 //----------------------------RADIO--------------------------------------------------------------------
 // https://www.airspayce.com/mikem/arduino/RadioHead/classRH__RF69.html
@@ -1435,10 +1415,10 @@ float PulseToMetterBySecond(long PULSE){
 //-------------------------------------------------------------------------------------------------------
 byte Azimuth(){    // run from interrupt
   byte rxShiftInByte=0x00;
+  digitalWrite(ShiftInLatchPin,0);     //Set latch pin to 0 to get data from the CD4021
+  delayMicroseconds(10);
   digitalWrite(ShiftInLatchPin,1);   //Set latch pin to 1 to get recent data into the CD4021
   delayMicroseconds(10);
-  // delay(1);
-  digitalWrite(ShiftInLatchPin,0);     //Set latch pin to 0 to get data from the CD4021
 
   for (int i=0; i<8; i++){                // 16 = two bank
     digitalWrite(ShiftInClockPin, 0);
@@ -1545,14 +1525,14 @@ void AprsWxIgate() {
       +LeadingZero(3,WindDir)
       +"/"+LeadingZero(3,PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])/0.447)
       +"g"+LeadingZero(3,PulseToMetterBySecond(PeriodMinRpmPulse)/0.447)
-      +"t"+LeadingZero(3,htu.readTemperature()*1.8+32)
+      +"t"+LeadingZero(3,(htu.readTemperature()+TempCal)*1.8+32)
       +"h"+LeadingZero(3,constrain(htu.readHumidity(), 0, 100))
-      +"b"+LeadingZero(6,Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32)))
+      +"b"+LeadingZero(6,Babinet(double(bmp.readPressure()), double((htu.readTemperature()+TempCal)*1.8+32)))
       +"P"+LeadingZero(3,RainPulseToMM(RainCount)/0.254) );
     }
     String StrBuf;
     // StrBuf=LeadingZero(3,htu.readTemperature()*1.8+32);
-    StrBuf=LeadingZero(3,bmp.readTemperature()*1.8+32);
+    StrBuf=LeadingZero(3,(bmp.readTemperature()+TempCal)*1.8+32);
 
     // #if defined(DS18B20)
     //   if(ExtTemp==true){
@@ -1584,7 +1564,7 @@ void AprsWxIgate() {
     // #endif
     +"t"+StrBuf
     +"h"+LeadingZero(3,constrain(htu.readHumidity(), 0, 100))
-    +"b"+LeadingZero(6,Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32)))
+    +"b"+LeadingZero(6,Babinet(double(bmp.readPressure()), double((htu.readTemperature()+TempCal)*1.8+32)))
     +"P"+LeadingZero(3,RainPulseToMM(RainCount)/0.254) );
 
     if(EnableSerialDebug>0){
@@ -2012,6 +1992,35 @@ void CLI(){
         }else{
           Prn(OUT, 1," Out of range");
         }
+
+      // C
+      }else if(incomingByte==67){
+        Prn(OUT, 0,"write temperature shift in C°, and press [");
+        if(TelnetAuthorized==true){
+          Prn(OUT, 1,"enter]");
+        }else{
+          Prn(OUT, 1,";]");
+        }
+        Enter();
+        int intBuf=0;
+        int mult=1;
+        for (int j=InputByte[0]; j>0; j--){
+          // detect -
+          if(j==1 && InputByte[j]==45){
+            intBuf = 0-intBuf;
+          }else{
+            intBuf = intBuf + ((InputByte[j]-48)*mult);
+            mult = mult*10;
+          }
+        }
+        // if(intBuf>=0 && intBuf<=359){
+          TempCal = intBuf*10;
+          EEPROM.writeShort(2, TempCal); // address, value
+          EEPROM.commit();
+          Prn(OUT, 1," shift "+String((float)EEPROM.readShort(2)/10.0)+"C° has been saved");
+        // }else{
+        //   Prn(OUT, 1," Out of range");
+        // }
 
     // W
     }else if(incomingByte==87){
@@ -2460,7 +2469,8 @@ void ListCommands(int OUT){
     Prn(OUT, 1, "             lifetime MAX    "+String(MinRpmPulse)+" ms|"+String(PulseToMetterBySecond(MinRpmPulse))+" m/s|"+String(PulseToMetterBySecond(MinRpmPulse)*3.6)+" km/h("+String(MinRpmPulseTimestamp)+")");
     #if defined(HTU21D)
       if(HTU21Denable==true){
-        Prn(OUT, 1, "  HTU21D Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"% ["+String(htu.readTemperature())+"°C]");
+        Prn(OUT, 1, "  HTU21D Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"% | "+String(htu.readTemperature()+TempCal)+"°C ["+String(htu.readTemperature())+"°C raw] <- main");
+        Prn(OUT, 1, "  Dew point "+String( (htu.readTemperature()+TempCal) - (100.0 - constrain(htu.readHumidity(), 0, 100)) / 5.0)+"°C");
       }else{
         Prn(OUT, 1, "  HTU21D Humidity relative n/a");
       }
@@ -2479,7 +2489,7 @@ void ListCommands(int OUT){
     #endif
     #if defined(BMP280)
       if(BMP280enable==true){
-        Prn(OUT, 1, "  BMP280 Pressure "+String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100)+" hPa ["+String(bmp.readPressure()/100)+" raw] "+String(bmp.readTemperature())+"°C");
+        Prn(OUT, 1, "  BMP280 Pressure "+String(Babinet(double(bmp.readPressure()), double((htu.readTemperature()+TempCal)*1.8+32))/100)+" hPa ["+String(bmp.readPressure()/100)+" raw] "+String(bmp.readTemperature()+TempCal)+"°C ["+String(bmp.readTemperature())+"°C raw]");
       }else{
         Prn(OUT, 1, "  BMP280 Pressure n/a");
       }
@@ -2551,6 +2561,8 @@ void ListCommands(int OUT){
 
     Prn(OUT, 0,"      S  Wind direction shift [");
     Prn(OUT, 1, String(WindDirShift)+"°]");
+    Prn(OUT, 0,"      C  Temperature calibration shift [");
+    Prn(OUT, 1, String(TempCal)+"°C]");
 
     // #if defined(DS18B20)
     //   // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
@@ -2588,23 +2600,23 @@ void ListCommands(int OUT){
       }
       Prn(OUT, 1,"");
     }
-    if(TxUdpBuffer[2] == 'm'){
-      Prn(OUT, 0,"      /  set encoder range - now [");
-      Prn(OUT, 0, String(NumberOfEncoderOutputs+1) );
-      if(NumberOfEncoderOutputs>7){
-        Prn(OUT, 1,"] (two bank)");
-      }else{
-        Prn(OUT, 1,"]");
-      }
-      Prn(OUT, 0,"      %  group buttons (select one from group) [");
-      if(EnableGroupButton==true){
-        Prn(OUT, 1,"ON]");
-        Prn(OUT, 1,"         !  SET group buttons");
-        Prn(OUT, 1,"         :  list group buttons");
-      }else{
-        Prn(OUT, 1,"OFF]");
-      }
-    }
+    // if(TxUdpBuffer[2] == 'm'){
+    //   Prn(OUT, 0,"      /  set encoder range - now [");
+    //   Prn(OUT, 0, String(NumberOfEncoderOutputs+1) );
+    //   if(NumberOfEncoderOutputs>7){
+    //     Prn(OUT, 1,"] (two bank)");
+    //   }else{
+    //     Prn(OUT, 1,"]");
+    //   }
+    //   Prn(OUT, 0,"      %  group buttons (select one from group) [");
+    //   if(EnableGroupButton==true){
+    //     Prn(OUT, 1,"ON]");
+    //     Prn(OUT, 1,"         !  SET group buttons");
+    //     Prn(OUT, 1,"         :  list group buttons");
+    //   }else{
+    //     Prn(OUT, 1,"OFF]");
+    //   }
+    // }
     Prn(OUT, 0,"      *  terminal debug ");
       if(EnableSerialDebug==0){
         Prn(OUT, 1,"[OFF]");
@@ -2613,52 +2625,52 @@ void ListCommands(int OUT){
       }else if(EnableSerialDebug==2){
         Prn(OUT, 1,"[ON-frenetic]");
       }
-    if(TxUdpBuffer[2]!='n'){
-      Prn(OUT, 0,"      #  network ID prefix [");
-      byte ID = NET_ID;
-      bitClear(ID, 0); // ->
-      bitClear(ID, 1);
-      bitClear(ID, 2);
-      bitClear(ID, 3);
-      ID = ID >> 4;
-      if(EnableGroupPrefix==true && TxUdpBuffer[2]=='m'){
-        Prn(OUT, 0,"x");
-      }else{
-        Prn(OUT, 0, String(ID, HEX) );
-      }
-      Prn(OUT, 0,"] hex");
-      if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-        Prn(OUT, 0," (set only on controllers)");
-      }
-      Prn(OUT, 1,"");
-
-      // if(HW_BCD_SW==false){
-        ID = NET_ID;
-        bitClear(ID, 4);
-        bitClear(ID, 5);
-        bitClear(ID, 6);
-        bitClear(ID, 7); // <-
-        Prn(OUT, 0,"         +network ID sufix [");
-        Prn(OUT, 0, String(ID, HEX) );
-        Prn(OUT, 0,"] hex");
-        if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-          Prn(OUT, 0," (multi control group - same at all)");
-        }
-        Prn(OUT, 1,"");
-      // }
-
-      if(TxUdpBuffer[2]=='m'){
-        Prn(OUT, 0,"      $  group network ID prefix (multi control) [");
-        if(EnableGroupPrefix==true){
-          Prn(OUT, 1,"ON]");
-        }else{
-          Prn(OUT, 1,"OFF]");
-        }
-      }
-      if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-        Prn(OUT, 1,"      .  list detected IP switch (multi control)");
-      }
-    }
+    // if(TxUdpBuffer[2]!='n'){
+    //   Prn(OUT, 0,"      #  network ID prefix [");
+    //   byte ID = NET_ID;
+    //   bitClear(ID, 0); // ->
+    //   bitClear(ID, 1);
+    //   bitClear(ID, 2);
+    //   bitClear(ID, 3);
+    //   ID = ID >> 4;
+    //   if(EnableGroupPrefix==true && TxUdpBuffer[2]=='m'){
+    //     Prn(OUT, 0,"x");
+    //   }else{
+    //     Prn(OUT, 0, String(ID, HEX) );
+    //   }
+    //   Prn(OUT, 0,"] hex");
+    //   if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
+    //     Prn(OUT, 0," (set only on controllers)");
+    //   }
+    //   Prn(OUT, 1,"");
+    //
+    //   // if(HW_BCD_SW==false){
+    //     ID = NET_ID;
+    //     bitClear(ID, 4);
+    //     bitClear(ID, 5);
+    //     bitClear(ID, 6);
+    //     bitClear(ID, 7); // <-
+    //     Prn(OUT, 0,"         +network ID sufix [");
+    //     Prn(OUT, 0, String(ID, HEX) );
+    //     Prn(OUT, 0,"] hex");
+    //     if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
+    //       Prn(OUT, 0," (multi control group - same at all)");
+    //     }
+    //     Prn(OUT, 1,"");
+    //   // }
+    //
+    //   if(TxUdpBuffer[2]=='m'){
+    //     Prn(OUT, 0,"      $  group network ID prefix (multi control) [");
+    //     if(EnableGroupPrefix==true){
+    //       Prn(OUT, 1,"ON]");
+    //     }else{
+    //       Prn(OUT, 1,"OFF]");
+    //     }
+    //   }
+    //   if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
+    //     Prn(OUT, 1,"      .  list detected IP switch (multi control)");
+    //   }
+    // }
     #if defined(Ser2net)
       Prn(OUT, 0,"      (  change serial1 baudrate [");
       Prn(OUT, 0, String(SERIAL1_BAUDRATE) );
@@ -2811,197 +2823,197 @@ TX  0ms:123;
 RX  0sm:123;
 */
 
-void RX_UDP(){
-  UDPpacketSize = UdpCommand.parsePacket();    // if there's data available, read a packet
-  if (UDPpacketSize){
-    UdpCommand.read(packetBuffer, 10);      // read the packet into packetBufffer
-    // Print RAW
-    if(EnableSerialDebug>0){
-      Serial.println();
-      Serial.print("RXraw [");
-      Serial.print(packetBuffer[0], HEX);
-      for(int i=1; i<8; i++){
-        Serial.print(char(packetBuffer[i]));
-      }
-      Serial.print(F("] "));
-      Serial.print(UdpCommand.remoteIP());
-      Serial.print(":");
-      Serial.print(UdpCommand.remotePort());
-      Serial.println();
-    }
-
-    // ID-FROM-TO filter
-    if(
-      (EnableGroupPrefix==false
-      && String(packetBuffer[0], DEC).toInt()==NET_ID
-      && packetBuffer[1]==TxUdpBuffer[2]  // FROM Switch
-      && packetBuffer[2]== 's'  // TO
-      && packetBuffer[3]== B00000000
-      // && packetBuffer[3]== ':'
-      && packetBuffer[7]== ';')
-      ||
-      (EnableGroupPrefix==true
-      && IdSufix(packetBuffer[0])==IdSufix(NET_ID)
-      && packetBuffer[1]==TxUdpBuffer[2]  // FROM Switch
-      && packetBuffer[2]== 's'  // TO
-      && packetBuffer[3]== B00000000
-      // && packetBuffer[3]== ':'
-      && packetBuffer[7]== ';')
-    ){
-
-      if( EnableGroupPrefix==true && (
-        DetectedRemoteSwPort [IdPrefix(packetBuffer[0])] == 0
-        || (packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o')
-        || (packetBuffer[4]== 'c' && packetBuffer[5]== 'f' && packetBuffer[6]== 'm')
-        )
-      ){
-        IPAddress TmpAddr = UdpCommand.remoteIP();
-        DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [0]=TmpAddr[0];     // Switch IP addres storage to array
-        DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [1]=TmpAddr[1];
-        DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [2]=TmpAddr[2];
-        DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [3]=TmpAddr[3];
-        DetectedRemoteSwPort [hexToDecBy4bit(IdPrefix(packetBuffer[0]))]=UdpCommand.remotePort();
-        if(EnableSerialDebug>0){
-          Serial.print("Detect controller ID ");
-          Serial.print(IdPrefix(packetBuffer[0]), HEX);
-          Serial.print(" on IP ");
-          Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [0]);
-          Serial.print(".");
-          Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [1]);
-          Serial.print(".");
-          Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [2]);
-          Serial.print(".");
-          Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [3]);
-          Serial.print(":");
-          Serial.println(DetectedRemoteSwPort [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] );
-        }
-        if(TxUdpBuffer[2] == 'm'){
-          TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 1);
-        }
-      }
-
-      // RX Broadcast / CFM
-      if((packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o')
-        || (packetBuffer[4]== 'c' && packetBuffer[5]== 'f' && packetBuffer[6]== 'm')
-        ){
-        if(EnableSerialDebug>0){
-          Serial.print("RX [");
-          Serial.print(packetBuffer[0], HEX);
-          for(int i=1; i<8; i++){
-            Serial.print(char(packetBuffer[i]));
-          }
-          Serial.print(F("] "));
-          Serial.print(UdpCommand.remoteIP());
-          Serial.print(":");
-          Serial.println(UdpCommand.remotePort());
-        }
-        if(packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o'){
-          TxUDP('s', packetBuffer[2], 'c', 'f', 'm', 1);    // 0=broadcast, 1= direct to RX IP
-          if(TxUdpBuffer[2] == 'm'){
-            TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 1);
-          }
-        }
-
-      // RX DATA
-      }else{
-        if(EnableGroupButton==true){
-          CheckGroup();
-        }else{
-          ShiftOutByte[0] = String(packetBuffer[4], DEC).toInt();    // Bank0
-        }
-        ShiftOutByte[1] = String(packetBuffer[5], DEC).toInt();    // Bank1
-        ShiftOutByte[2] = String(packetBuffer[6], DEC).toInt();    // Bank2
-
-        // SHIFT OUT
-        #if defined(ShiftOut)
-          // digitalWrite(ShiftOutLatchPin, LOW);  // když dáme latchPin na LOW mužeme do registru poslat data
-          // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[2]);
-          // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[1]);
-          // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[0]);
-          // digitalWrite(ShiftOutLatchPin, HIGH);    // jakmile dáme latchPin na HIGH data se objeví na výstupu
-          if(EnableSerialDebug>0){
-            Serial.println("ShiftOut");
-          }
-        #endif
-
-        if(EnableSerialDebug>0){
-          // Serial.println();
-          Serial.print(F("RX ["));
-          Serial.print(packetBuffer[0], HEX);
-          for(int i=1; i<4; i++){
-            Serial.print(char(packetBuffer[i]));
-          }
-          Serial.print((byte)packetBuffer[4], BIN);
-          Serial.print(F("|"));
-          Serial.print((byte)packetBuffer[5], BIN);
-          Serial.print(F("|"));
-          Serial.print((byte)packetBuffer[6], BIN);
-          Serial.print(F(";] "));
-          Serial.print(UdpCommand.remoteIP());
-          Serial.print(F(":"));
-          Serial.println(UdpCommand.remotePort());
-        }
-        if(UdpCommand.remotePort() != DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))] && EnableGroupPrefix==true){
-          // if(EnableSerialDebug>0){
-            Serial.print(F("** Change ip-port ID "));
-            Serial.print(IdPrefix(packetBuffer[0]), HEX);
-            Serial.print(F(" (OLD-"));
-            Serial.print(DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))]);
-            Serial.print(F(" NEW-"));
-            Serial.print(UdpCommand.remotePort());
-            Serial.println(F(") **"));
-          // }
-          DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))]=UdpCommand.remotePort();
-        }
-        TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-      }
-      WatchdogTimer=millis();
-      // activate
-      if(OutputWatchdog==123456){
-        OutputWatchdog=EEPROM.readUInt(27);
-      }
-    } // filtered end
-    else{
-      if(EnableSerialDebug>0){
-        Serial.println(F("   Different NET-ID, or bad packet format"));
-      }
-    }
-    memset(packetBuffer, 0, sizeof(packetBuffer));   // Clear contents of Buffer
-  } //end IfUdpPacketSice
-}
+// void RX_UDP(){
+//   UDPpacketSize = UdpCommand.parsePacket();    // if there's data available, read a packet
+//   if (UDPpacketSize){
+//     UdpCommand.read(packetBuffer, 10);      // read the packet into packetBufffer
+//     // Print RAW
+//     if(EnableSerialDebug>0){
+//       Serial.println();
+//       Serial.print("RXraw [");
+//       Serial.print(packetBuffer[0], HEX);
+//       for(int i=1; i<8; i++){
+//         Serial.print(char(packetBuffer[i]));
+//       }
+//       Serial.print(F("] "));
+//       Serial.print(UdpCommand.remoteIP());
+//       Serial.print(":");
+//       Serial.print(UdpCommand.remotePort());
+//       Serial.println();
+//     }
+//
+//     // ID-FROM-TO filter
+//     if(
+//       (EnableGroupPrefix==false
+//       && String(packetBuffer[0], DEC).toInt()==NET_ID
+//       && packetBuffer[1]==TxUdpBuffer[2]  // FROM Switch
+//       && packetBuffer[2]== 's'  // TO
+//       && packetBuffer[3]== B00000000
+//       // && packetBuffer[3]== ':'
+//       && packetBuffer[7]== ';')
+//       ||
+//       (EnableGroupPrefix==true
+//       && IdSufix(packetBuffer[0])==IdSufix(NET_ID)
+//       && packetBuffer[1]==TxUdpBuffer[2]  // FROM Switch
+//       && packetBuffer[2]== 's'  // TO
+//       && packetBuffer[3]== B00000000
+//       // && packetBuffer[3]== ':'
+//       && packetBuffer[7]== ';')
+//     ){
+//
+//       if( EnableGroupPrefix==true && (
+//         DetectedRemoteSwPort [IdPrefix(packetBuffer[0])] == 0
+//         || (packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o')
+//         || (packetBuffer[4]== 'c' && packetBuffer[5]== 'f' && packetBuffer[6]== 'm')
+//         )
+//       ){
+//         IPAddress TmpAddr = UdpCommand.remoteIP();
+//         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [0]=TmpAddr[0];     // Switch IP addres storage to array
+//         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [1]=TmpAddr[1];
+//         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [2]=TmpAddr[2];
+//         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [3]=TmpAddr[3];
+//         DetectedRemoteSwPort [hexToDecBy4bit(IdPrefix(packetBuffer[0]))]=UdpCommand.remotePort();
+//         if(EnableSerialDebug>0){
+//           Serial.print("Detect controller ID ");
+//           Serial.print(IdPrefix(packetBuffer[0]), HEX);
+//           Serial.print(" on IP ");
+//           Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [0]);
+//           Serial.print(".");
+//           Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [1]);
+//           Serial.print(".");
+//           Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [2]);
+//           Serial.print(".");
+//           Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [3]);
+//           Serial.print(":");
+//           Serial.println(DetectedRemoteSwPort [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] );
+//         }
+//         if(TxUdpBuffer[2] == 'm'){
+//           TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 1);
+//         }
+//       }
+//
+//       // RX Broadcast / CFM
+//       if((packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o')
+//         || (packetBuffer[4]== 'c' && packetBuffer[5]== 'f' && packetBuffer[6]== 'm')
+//         ){
+//         if(EnableSerialDebug>0){
+//           Serial.print("RX [");
+//           Serial.print(packetBuffer[0], HEX);
+//           for(int i=1; i<8; i++){
+//             Serial.print(char(packetBuffer[i]));
+//           }
+//           Serial.print(F("] "));
+//           Serial.print(UdpCommand.remoteIP());
+//           Serial.print(":");
+//           Serial.println(UdpCommand.remotePort());
+//         }
+//         if(packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o'){
+//           TxUDP('s', packetBuffer[2], 'c', 'f', 'm', 1);    // 0=broadcast, 1= direct to RX IP
+//           if(TxUdpBuffer[2] == 'm'){
+//             TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 1);
+//           }
+//         }
+//
+//       // RX DATA
+//       }else{
+//         if(EnableGroupButton==true){
+//           CheckGroup();
+//         }else{
+//           ShiftOutByte[0] = String(packetBuffer[4], DEC).toInt();    // Bank0
+//         }
+//         ShiftOutByte[1] = String(packetBuffer[5], DEC).toInt();    // Bank1
+//         ShiftOutByte[2] = String(packetBuffer[6], DEC).toInt();    // Bank2
+//
+//         // SHIFT OUT
+//         #if defined(ShiftOut)
+//           // digitalWrite(ShiftOutLatchPin, LOW);  // když dáme latchPin na LOW mužeme do registru poslat data
+//           // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[2]);
+//           // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[1]);
+//           // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[0]);
+//           // digitalWrite(ShiftOutLatchPin, HIGH);    // jakmile dáme latchPin na HIGH data se objeví na výstupu
+//           if(EnableSerialDebug>0){
+//             Serial.println("ShiftOut");
+//           }
+//         #endif
+//
+//         if(EnableSerialDebug>0){
+//           // Serial.println();
+//           Serial.print(F("RX ["));
+//           Serial.print(packetBuffer[0], HEX);
+//           for(int i=1; i<4; i++){
+//             Serial.print(char(packetBuffer[i]));
+//           }
+//           Serial.print((byte)packetBuffer[4], BIN);
+//           Serial.print(F("|"));
+//           Serial.print((byte)packetBuffer[5], BIN);
+//           Serial.print(F("|"));
+//           Serial.print((byte)packetBuffer[6], BIN);
+//           Serial.print(F(";] "));
+//           Serial.print(UdpCommand.remoteIP());
+//           Serial.print(F(":"));
+//           Serial.println(UdpCommand.remotePort());
+//         }
+//         if(UdpCommand.remotePort() != DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))] && EnableGroupPrefix==true){
+//           // if(EnableSerialDebug>0){
+//             Serial.print(F("** Change ip-port ID "));
+//             Serial.print(IdPrefix(packetBuffer[0]), HEX);
+//             Serial.print(F(" (OLD-"));
+//             Serial.print(DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))]);
+//             Serial.print(F(" NEW-"));
+//             Serial.print(UdpCommand.remotePort());
+//             Serial.println(F(") **"));
+//           // }
+//           DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))]=UdpCommand.remotePort();
+//         }
+//         TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
+//       }
+//       WatchdogTimer=millis();
+//       // activate
+//       if(OutputWatchdog==123456){
+//         OutputWatchdog=EEPROM.readUInt(27);
+//       }
+//     } // filtered end
+//     else{
+//       if(EnableSerialDebug>0){
+//         Serial.println(F("   Different NET-ID, or bad packet format"));
+//       }
+//     }
+//     memset(packetBuffer, 0, sizeof(packetBuffer));   // Clear contents of Buffer
+//   } //end IfUdpPacketSice
+// }
 //-------------------------------------------------------------------------------------------------------
 
-void CheckGroup(){
-  int ChangeBit=9;
-  int NumberOfChange=0;
-  for (int i=0; i<8; i++){
-    if(bitRead(packetBuffer[4], i)!=bitRead(ShiftOutByte[0], i)){
-      ChangeBit=i;
-      NumberOfChange++;
-    }
-  }
-  // Serial.print("ChangeBit|NumberOfChange ");
-  // Serial.print(ChangeBit+1);
-  // Serial.print(" ");
-  // Serial.println(NumberOfChange);
-
-  ShiftOutByte[0] = String(packetBuffer[4], DEC).toInt();    // Bank0
-  if(NumberOfChange==1){
-    // Serial.println("clearGroup");
-    NumberOfChange=0;
-    for (int i=0; i<8; i++){
-      if(GroupButton[ChangeBit]==GroupButton[i] && ChangeBit!=i){
-        bitClear(ShiftOutByte[0], i);
-        NumberOfChange++;
-        // Serial.print("Bitclear ");
-        // Serial.println(i);
-      }
-    }
-    if(NumberOfChange>0){
-      bitSet(ShiftOutByte[0], ChangeBit);
-    }
-  }
-}
+// void CheckGroup(){
+//   int ChangeBit=9;
+//   int NumberOfChange=0;
+//   for (int i=0; i<8; i++){
+//     if(bitRead(packetBuffer[4], i)!=bitRead(ShiftOutByte[0], i)){
+//       ChangeBit=i;
+//       NumberOfChange++;
+//     }
+//   }
+//   // Serial.print("ChangeBit|NumberOfChange ");
+//   // Serial.print(ChangeBit+1);
+//   // Serial.print(" ");
+//   // Serial.println(NumberOfChange);
+//
+//   ShiftOutByte[0] = String(packetBuffer[4], DEC).toInt();    // Bank0
+//   if(NumberOfChange==1){
+//     // Serial.println("clearGroup");
+//     NumberOfChange=0;
+//     for (int i=0; i<8; i++){
+//       if(GroupButton[ChangeBit]==GroupButton[i] && ChangeBit!=i){
+//         bitClear(ShiftOutByte[0], i);
+//         NumberOfChange++;
+//         // Serial.print("Bitclear ");
+//         // Serial.println(i);
+//       }
+//     }
+//     if(NumberOfChange>0){
+//       bitSet(ShiftOutByte[0], ChangeBit);
+//     }
+//   }
+// }
 //-------------------------------------------------------------------------------------------------------
 
 unsigned char hexToDecBy4bit(unsigned char hex)
@@ -3013,204 +3025,204 @@ unsigned char hexToDecBy4bit(unsigned char hex)
 
 //-------------------------------------------------------------------------------------------------------
 
-void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
-
-  // TxUdpBuffer[0] = NET_ID;
-  TxUdpBuffer[1] = FROM;
-  // TxUdpBuffer[2] = TO;
-
-  // if(TxUdpBuffer[2]=='m' && ( EnableGroupPrefix==true || EnableGroupButton==true ) ){
-  //   TxUdpBuffer[3] = B00101101;           // -  multi control || GroupButton
-  // }else{
-  //   TxUdpBuffer[3] = B00111010;           // :
-  // }
-
-  TxUdpBuffer[3] = B00000000;
-    // multi control
-    if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-      bitSet(TxUdpBuffer[3], 0);
-    }
-    // group button
-    if(TxUdpBuffer[2]=='m' && EnableGroupButton==true){
-      bitSet(TxUdpBuffer[3], 1);
-    }
-
-  TxUdpBuffer[4] = A;
-  TxUdpBuffer[5] = B;
-  TxUdpBuffer[6] = C;
-  TxUdpBuffer[7] = B00111011;           // ;
-
-  // BROADCAST
-  if(A=='b' && B=='r' && C=='o'){  // b r o
-    if(TxUdpBuffer[2] == 'm'){
-      TxUdpBuffer[6] = NumberOfEncoderOutputs;
-    }
-    // direct
-    if(DIRECT==0){
-      RemoteSwIP = ~ETH.subnetMask() | ETH.gatewayIP();
-      if(EnableSerialDebug>0){
-        Serial.print(F("TX broadcast ["));
-      }
-    }else{
-      RemoteSwIP = UdpCommand.remoteIP();
-      if(EnableSerialDebug>0){
-        Serial.print(F("TX direct ["));
-      }
-    }
-    UdpCommand.beginPacket(RemoteSwIP, BroadcastPort);
-
-  // CFM
-  }else if(A=='c' && B=='f' && C=='m'){  // cfm
-      if(TxUdpBuffer[2] == 'm'){
-        TxUdpBuffer[6] = NumberOfEncoderOutputs;
-      }
-      if(EnableSerialDebug>0){
-        Serial.print(F("TX direct ["));
-      }
-      UdpCommand.beginPacket(UdpCommand.remoteIP(), UdpCommand.remotePort());
-
-  // DATA
-  }else{
-    RemoteSwIP = UdpCommand.remoteIP();
-    if(EnableSerialDebug>0){
-      Serial.print(F("TX ["));
-    }
-    UdpCommand.beginPacket(RemoteSwIP, UdpCommand.remotePort());
-  }
-
-  // send
-  if(EnableGroupPrefix==false){
-    UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
-    UdpCommand.endPacket();
-    if(EnableSerialDebug>0){
-      Serial.print(TxUdpBuffer[0], HEX);
-      Serial.print(char(TxUdpBuffer[1]));
-      Serial.print(char(TxUdpBuffer[2]));
-      Serial.print(F("|"));
-      Serial.print(TxUdpBuffer[3], BIN);
-      Serial.print(F("|"));
-      Serial.print(TxUdpBuffer[4], BIN);
-      Serial.print(F("|"));
-      Serial.print(TxUdpBuffer[5], BIN);
-      Serial.print(F("|"));
-      Serial.print(TxUdpBuffer[6], BIN);
-      Serial.print(char(TxUdpBuffer[7]));
-      Serial.print(F("] "));
-      Serial.print(RemoteSwIP);
-      Serial.print(F(":"));
-      Serial.print(UdpCommand.remotePort());
-      #if defined(WIFI)
-        Serial.print(" | dBm: ");
-        Serial.print(WiFi.RSSI());
-      #endif
-      Serial.println();
-    }
-
-  // send EnableGroupPrefix
-  }else{
-    // answer to RX ip
-    TxUdpBuffer[0]=packetBuffer[0];   // NET_ID by RX NET_ID
-    UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
-    UdpCommand.endPacket();
-    if(EnableSerialDebug>0){
-      Serial.print(TxUdpBuffer[0], HEX);
-      for (int i=1; i<4; i++){
-        Serial.print(char(TxUdpBuffer[i]));
-      }
-      Serial.print(TxUdpBuffer[4], BIN);
-      Serial.print(F("|"));
-      Serial.print(TxUdpBuffer[5], BIN);
-      Serial.print(F("|"));
-      Serial.print(TxUdpBuffer[6], BIN);
-      Serial.print(char(TxUdpBuffer[7]));
-      Serial.print(F("] "));
-      Serial.print(RemoteSwIP);
-      Serial.print(F(":"));
-      Serial.print(UdpCommand.remotePort());
-      #if defined(WIFI)
-        Serial.print(" | dBm: ");
-        Serial.print(WiFi.RSSI());
-      #endif
-      Serial.println();
-    }
-    // send to all ip from storage
-    IPAddress ControllerIP = UdpCommand.remoteIP();
-    for (int i=0; i<16; i++){
-      if(DetectedRemoteSwPort[i]!=0){
-        TxUdpBuffer[0]=IdSufix(NET_ID) | i<<4;       // NET_ID by destination device
-        RemoteSwIP = DetectedRemoteSw[i];
-        RemoteSwPort = DetectedRemoteSwPort[i];
-        if(ControllerIP!=RemoteSwIP){
-          UdpCommand.beginPacket(RemoteSwIP, RemoteSwPort);
-            UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
-          UdpCommand.endPacket();
-
-          if(EnableSerialDebug>0){
-            Serial.print(F("TX direct ID-"));
-            Serial.print(i, HEX);
-            Serial.print(IdSufix(NET_ID), HEX);
-            Serial.print(F(" "));
-            Serial.print(RemoteSwIP);
-            Serial.print(F(":"));
-            Serial.print(RemoteSwPort);
-            Serial.print(F(" ["));
-            Serial.print(TxUdpBuffer[0], HEX);
-            for (int i=1; i<8; i++){
-              Serial.print(char(TxUdpBuffer[i]));
-              // Serial.print(F(" "));
-            }
-            Serial.print("]");
-            #if defined(WIFI)
-              Serial.print(" WiFi dBm: ");
-              Serial.print(WiFi.RSSI());
-            #endif
-            Serial.println();
-          }
-        }else{
-          if(EnableSerialDebug>0){
-            Serial.print(F("noTX - RX prefix "));
-            Serial.print(i, HEX);
-            Serial.print(F(" "));
-            Serial.print(RemoteSwIP);
-            Serial.print(F(":"));
-            Serial.println(RemoteSwPort);
-          }
-        }
-      }
-    }
-    // broadcast all prefix
-    if(A=='b' && B=='r' && C=='o' && DIRECT==0 && TxUdpBuffer[2] == 'm'){
-      if(EnableSerialDebug>0){
-        Serial.print("TX all prefix ");
-        Serial.print(RemoteSwIP);
-        Serial.print(":");
-        Serial.print(BroadcastPort);
-        Serial.print(F(" ["));
-        Serial.print("*");
-        for (int i=1; i<8; i++){
-          Serial.print(char(TxUdpBuffer[i]));
-          // Serial.print(F(" "));
-        }
-        Serial.println("]");
-      }
-      Serial.print("*) ");
-      for (int i=0; i<16; i++){
-        TxUdpBuffer[0]=IdSufix(NET_ID) | (i<<4);
-        if(EnableSerialDebug>0){
-          Serial.print(TxUdpBuffer[0], HEX);
-          Serial.print(" ");
-        }
-        UdpCommand.beginPacket(RemoteSwIP, BroadcastPort);
-        UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
-        UdpCommand.endPacket();
-      }
-      if(EnableSerialDebug>0){
-        Serial.println();
-      }
-    }   // end b r o
-
-  } // end EnableGroupPrefix
-}
+// void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
+//
+//   // TxUdpBuffer[0] = NET_ID;
+//   TxUdpBuffer[1] = FROM;
+//   // TxUdpBuffer[2] = TO;
+//
+//   // if(TxUdpBuffer[2]=='m' && ( EnableGroupPrefix==true || EnableGroupButton==true ) ){
+//   //   TxUdpBuffer[3] = B00101101;           // -  multi control || GroupButton
+//   // }else{
+//   //   TxUdpBuffer[3] = B00111010;           // :
+//   // }
+//
+//   TxUdpBuffer[3] = B00000000;
+//     // multi control
+//     if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
+//       bitSet(TxUdpBuffer[3], 0);
+//     }
+//     // group button
+//     if(TxUdpBuffer[2]=='m' && EnableGroupButton==true){
+//       bitSet(TxUdpBuffer[3], 1);
+//     }
+//
+//   TxUdpBuffer[4] = A;
+//   TxUdpBuffer[5] = B;
+//   TxUdpBuffer[6] = C;
+//   TxUdpBuffer[7] = B00111011;           // ;
+//
+//   // BROADCAST
+//   if(A=='b' && B=='r' && C=='o'){  // b r o
+//     if(TxUdpBuffer[2] == 'm'){
+//       TxUdpBuffer[6] = NumberOfEncoderOutputs;
+//     }
+//     // direct
+//     if(DIRECT==0){
+//       RemoteSwIP = ~ETH.subnetMask() | ETH.gatewayIP();
+//       if(EnableSerialDebug>0){
+//         Serial.print(F("TX broadcast ["));
+//       }
+//     }else{
+//       RemoteSwIP = UdpCommand.remoteIP();
+//       if(EnableSerialDebug>0){
+//         Serial.print(F("TX direct ["));
+//       }
+//     }
+//     UdpCommand.beginPacket(RemoteSwIP, BroadcastPort);
+//
+//   // CFM
+//   }else if(A=='c' && B=='f' && C=='m'){  // cfm
+//       if(TxUdpBuffer[2] == 'm'){
+//         TxUdpBuffer[6] = NumberOfEncoderOutputs;
+//       }
+//       if(EnableSerialDebug>0){
+//         Serial.print(F("TX direct ["));
+//       }
+//       UdpCommand.beginPacket(UdpCommand.remoteIP(), UdpCommand.remotePort());
+//
+//   // DATA
+//   }else{
+//     RemoteSwIP = UdpCommand.remoteIP();
+//     if(EnableSerialDebug>0){
+//       Serial.print(F("TX ["));
+//     }
+//     UdpCommand.beginPacket(RemoteSwIP, UdpCommand.remotePort());
+//   }
+//
+//   // send
+//   if(EnableGroupPrefix==false){
+//     UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
+//     UdpCommand.endPacket();
+//     if(EnableSerialDebug>0){
+//       Serial.print(TxUdpBuffer[0], HEX);
+//       Serial.print(char(TxUdpBuffer[1]));
+//       Serial.print(char(TxUdpBuffer[2]));
+//       Serial.print(F("|"));
+//       Serial.print(TxUdpBuffer[3], BIN);
+//       Serial.print(F("|"));
+//       Serial.print(TxUdpBuffer[4], BIN);
+//       Serial.print(F("|"));
+//       Serial.print(TxUdpBuffer[5], BIN);
+//       Serial.print(F("|"));
+//       Serial.print(TxUdpBuffer[6], BIN);
+//       Serial.print(char(TxUdpBuffer[7]));
+//       Serial.print(F("] "));
+//       Serial.print(RemoteSwIP);
+//       Serial.print(F(":"));
+//       Serial.print(UdpCommand.remotePort());
+//       #if defined(WIFI)
+//         Serial.print(" | dBm: ");
+//         Serial.print(WiFi.RSSI());
+//       #endif
+//       Serial.println();
+//     }
+//
+//   // send EnableGroupPrefix
+//   }else{
+//     // answer to RX ip
+//     TxUdpBuffer[0]=packetBuffer[0];   // NET_ID by RX NET_ID
+//     UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
+//     UdpCommand.endPacket();
+//     if(EnableSerialDebug>0){
+//       Serial.print(TxUdpBuffer[0], HEX);
+//       for (int i=1; i<4; i++){
+//         Serial.print(char(TxUdpBuffer[i]));
+//       }
+//       Serial.print(TxUdpBuffer[4], BIN);
+//       Serial.print(F("|"));
+//       Serial.print(TxUdpBuffer[5], BIN);
+//       Serial.print(F("|"));
+//       Serial.print(TxUdpBuffer[6], BIN);
+//       Serial.print(char(TxUdpBuffer[7]));
+//       Serial.print(F("] "));
+//       Serial.print(RemoteSwIP);
+//       Serial.print(F(":"));
+//       Serial.print(UdpCommand.remotePort());
+//       #if defined(WIFI)
+//         Serial.print(" | dBm: ");
+//         Serial.print(WiFi.RSSI());
+//       #endif
+//       Serial.println();
+//     }
+//     // send to all ip from storage
+//     IPAddress ControllerIP = UdpCommand.remoteIP();
+//     for (int i=0; i<16; i++){
+//       if(DetectedRemoteSwPort[i]!=0){
+//         TxUdpBuffer[0]=IdSufix(NET_ID) | i<<4;       // NET_ID by destination device
+//         RemoteSwIP = DetectedRemoteSw[i];
+//         RemoteSwPort = DetectedRemoteSwPort[i];
+//         if(ControllerIP!=RemoteSwIP){
+//           UdpCommand.beginPacket(RemoteSwIP, RemoteSwPort);
+//             UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
+//           UdpCommand.endPacket();
+//
+//           if(EnableSerialDebug>0){
+//             Serial.print(F("TX direct ID-"));
+//             Serial.print(i, HEX);
+//             Serial.print(IdSufix(NET_ID), HEX);
+//             Serial.print(F(" "));
+//             Serial.print(RemoteSwIP);
+//             Serial.print(F(":"));
+//             Serial.print(RemoteSwPort);
+//             Serial.print(F(" ["));
+//             Serial.print(TxUdpBuffer[0], HEX);
+//             for (int i=1; i<8; i++){
+//               Serial.print(char(TxUdpBuffer[i]));
+//               // Serial.print(F(" "));
+//             }
+//             Serial.print("]");
+//             #if defined(WIFI)
+//               Serial.print(" WiFi dBm: ");
+//               Serial.print(WiFi.RSSI());
+//             #endif
+//             Serial.println();
+//           }
+//         }else{
+//           if(EnableSerialDebug>0){
+//             Serial.print(F("noTX - RX prefix "));
+//             Serial.print(i, HEX);
+//             Serial.print(F(" "));
+//             Serial.print(RemoteSwIP);
+//             Serial.print(F(":"));
+//             Serial.println(RemoteSwPort);
+//           }
+//         }
+//       }
+//     }
+//     // broadcast all prefix
+//     if(A=='b' && B=='r' && C=='o' && DIRECT==0 && TxUdpBuffer[2] == 'm'){
+//       if(EnableSerialDebug>0){
+//         Serial.print("TX all prefix ");
+//         Serial.print(RemoteSwIP);
+//         Serial.print(":");
+//         Serial.print(BroadcastPort);
+//         Serial.print(F(" ["));
+//         Serial.print("*");
+//         for (int i=1; i<8; i++){
+//           Serial.print(char(TxUdpBuffer[i]));
+//           // Serial.print(F(" "));
+//         }
+//         Serial.println("]");
+//       }
+//       Serial.print("*) ");
+//       for (int i=0; i<16; i++){
+//         TxUdpBuffer[0]=IdSufix(NET_ID) | (i<<4);
+//         if(EnableSerialDebug>0){
+//           Serial.print(TxUdpBuffer[0], HEX);
+//           Serial.print(" ");
+//         }
+//         UdpCommand.beginPacket(RemoteSwIP, BroadcastPort);
+//         UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
+//         UdpCommand.endPacket();
+//       }
+//       if(EnableSerialDebug>0){
+//         Serial.println();
+//       }
+//     }   // end b r o
+//
+//   } // end EnableGroupPrefix
+// }
 //-------------------------------------------------------------------------------------------------------
 
 void http(){
@@ -3468,7 +3480,7 @@ void http2(){
           //   Serial.println(temperatureC);
           // }
 
-          webClient2.print(String(bmp.readTemperature()));
+          webClient2.print(String(bmp.readTemperature()+TempCal));
           webClient2.println(F("&deg;</span><br><span style=\"color: #000; background: #080; padding: 4px 6px 4px 6px; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;\">"));
           #if defined(HTU21D)
             if(HTU21Denable==true){
@@ -3478,7 +3490,7 @@ void http2(){
           webClient2.print(F("% | "));
           #if defined(BMP280)
             if(BMP280enable==true){
-              webClient2.print(String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100));
+              webClient2.print(String(Babinet(double(bmp.readPressure()), double((htu.readTemperature()+TempCal)*1.8+32))/100));
             }
           #endif
           webClient2.print(F(" hPa "));
@@ -3603,10 +3615,10 @@ void EthEvent(WiFiEvent_t event)
       ListCommands(0);
 
       // EnableSerialDebug=1;
-      TxUDP('s', packetBuffer[2], 'b', 'r', 'o', 0);    // 0=broadcast, 1= direct to RX IP
-      if(TxUdpBuffer[2] == 'm'){
-        TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-      }
+      // TxUDP('s', packetBuffer[2], 'b', 'r', 'o', 0);    // 0=broadcast, 1= direct to RX IP
+      // if(TxUdpBuffer[2] == 'm'){
+      //   TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
+      // }
       // EnableSerialDebug=0;
       break;
 
@@ -3692,46 +3704,8 @@ void MqttRx(char *topic, byte *payload, unsigned int length) {
         Prn(3, 1, "/get ");
       }
       Interrupts(false);
-      // digitalWrite(EnablePin,1);
-
-      Azimuth();
-      MqttPubString("WindDir-azimuth", String(WindDir), false);
-
-      #if defined(DS18B20)
-        if(ExtTemp==true){
-          sensors.requestTemperatures();
-          // float temperatureC = sensors.getTempCByIndex(0);
-          float temperatureC = sensors.getTempC(insideThermometer);
-          MqttPubString("Temperature-Celsius", String(temperatureC), false);
-        }else{
-          MqttPubString("Temperature-Celsius", String(htu.readTemperature()), false);
-        }
-      #endif
-
-      MqttPubString("WindSpeedMaxPeriod-mps", String(PulseToMetterBySecond(PeriodMinRpmPulse)), false);
-
-      #if defined(BMP280)
-        if(BMP280enable==true){
-          MqttPubString("Pressure-hPa", String(Babinet(double(bmp.readPressure()), double(htu.readTemperature()*1.8+32))/100), false);
-        }
-      #endif
-
-      #if defined(HTU21D)
-        if(HTU21Denable==true){
-          MqttPubString("HumidityRel-Percent", String(constrain(htu.readHumidity(), 0, 100)), false);
-        }
-      #endif
-
-      #if defined(RF69_EXTERNAL_SENSOR)
-      if(temp_radio.toInt()>0 && humidity_radio.toInt()>0 && vbat_radio.toInt()>0 && RF69enable==true){
-        MqttPubString("RF-Temperature-Celsius", temp_radio, false);
-        MqttPubString("RF-HumidityRel-Percent", humidity_radio, false);
-        MqttPubString("RF-BattVoltage", vbat_radio, false);
-      }
-      #endif
-
+        MqttPubValue();
       Interrupts(true);
-      // digitalWrite(EnablePin,0);
     }
 
 } // MqttRx END
