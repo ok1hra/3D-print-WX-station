@@ -58,7 +58,6 @@ Changelog:
 20200424 - add support for external 1-wire temperature ensor (DS18B20)
 
 ToDo
-- nastaveni HWREV do eeprom a kontrola proti verzi FW (nejde prepinat v runtime)
 - web setup
 - web selfcheck
 - Windy

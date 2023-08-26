@@ -19,7 +19,7 @@
         RED      - neodym magnets
         GREEN    - bearings
 //------------------------------------------------------------------- */
-        Part             = -15;    // select part 1-16, -x=all, 17=variant of inner
+        Part             = 11;    // select part 1-16, -x=all, 17=variant of inner
                                    // ./render.sh bash script generate all parts
         BearingInTuning  = +20;    // +- smooth tuning bearing inner diameter in um
         MountDia         =  42;    // mm tube size for mounting
@@ -724,14 +724,27 @@ module ring(prumer, zaobleni, Xplus, FN){
 }
 
 module WaterMeasure(XX,YY,ZZ,MagnetZZ){
+    REDUCE=0.5;
     translate([0,0,-3.7])  difference(){
         union(){
             difference(){
                 hull(){
                     translate([0,0,ZZ/2]) cube([1,YY,ZZ], center=true);
-                    cube([XX,YY,1], center=true);
+//                    cube([XX,YY,1], center=true);
+                    cube([1,YY,1], center=true);
+                    translate([-XX/2,0,0]) cube([0.1,YY*REDUCE,1], center=true);
+                        translate([-XX/4,0,ZZ/4-0.5]) cube([0.1,YY,ZZ/2], center=true);
+                    translate([XX/2,0,0]) cube([0.1,YY*REDUCE,1], center=true);
+                        translate([XX/4,0,ZZ/4-0.5]) cube([0.1,YY,ZZ/2], center=true);
                 }
-                translate([0,0,ZZ/2+0.5]) cube([XX+2,YY-2,ZZ], center=true);
+//                translate([0,0,ZZ/2+0.5]) cube([XX+2,YY-2,ZZ], center=true);
+                hull(){
+                    translate([-XX/2,0,ZZ/2+0.5]) cube([1,YY*REDUCE-2,ZZ], center=true);
+                        translate([-XX/4,0,ZZ/2+0.5]) cube([1,YY-2,ZZ], center=true);
+                    translate([0,0,ZZ/2+0.5]) cube([1,YY-2,ZZ], center=true);
+                    translate([XX/2,0,ZZ/2+0.5]) cube([1,YY*REDUCE-2,ZZ], center=true);
+                        translate([XX/4,0,ZZ/2+0.5]) cube([1,YY-2,ZZ], center=true);
+                }
             }
             hull(){
                 translate([0,0,ZZ-0.5]) cube([1,YY,1], center=true);
