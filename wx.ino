@@ -98,9 +98,8 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20230826";
+const char* REV = "20230828";
 #define HWREVsw 8                   // software PCB version [7-8]
-unsigned char HWREVpcb = 0;          // PCB version must be compatible with HWREVsw
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
@@ -128,6 +127,7 @@ char MACchar[18];
 const char* ssid     = "";
 const char* password = "";
 const float FunelDiaInCM = 10.0; // cm funnel diameter
+unsigned char HWREVpcb = 0;          // PCB version must be compatible with HWREVsw
 //-------------------------------------------------------------------------------------------------------
 // unsigned long TimerTemp;
 
@@ -679,9 +679,9 @@ void setup() {
 
   // 2-3 TempCal Short
   if(EEPROM.readByte(2)!=255){
-    TempCal = (float)EEPROM.readShort(2)/10.0;
+    TempCal = (float)EEPROM.readShort(2)/100.0;
   }else{
-    TempCal = -1.65;
+    TempCal = -2.50;
   }
 
   // 4 HWREVpcb UChar
@@ -2045,23 +2045,36 @@ void CLI(){
         Enter();
         int intBuf=0;
         int mult=1;
+        bool negativ = false;
+        bool decimals = true;
+        int decimal=1;
         for (int j=InputByte[0]; j>0; j--){
-          // detect -
-          if(j==1 && InputByte[j]==45){
-            intBuf = 0-intBuf;
-          }else{
-            intBuf = intBuf + ((InputByte[j]-48)*mult);
-            mult = mult*10;
+          // 0-9 || ,-.
+          if( (InputByte[j]>=48 && InputByte[j]<=57) || (InputByte[j]>=44 && InputByte[j]<=46) ){
+            if(InputByte[j]==45){
+              negativ = true;
+            }else if(InputByte[j]==44 || InputByte[j]==46){
+              decimals=false;
+            }else{
+              intBuf = intBuf + ((InputByte[j]-48)*mult);
+              mult = mult*10;
+              if(decimals==true){
+                decimal= decimal*10;
+              }
+            }
           }
         }
-        // if(intBuf>=0 && intBuf<=359){
-          TempCal = intBuf*10;
-          EEPROM.writeShort(2, TempCal); // address, value
-          EEPROM.commit();
-          Prn(OUT, 1," shift "+String((float)EEPROM.readShort(2)/10.0)+"C° has been saved");
-        // }else{
-        //   Prn(OUT, 1," Out of range");
-        // }
+        if(negativ==true){
+          intBuf=-intBuf;
+        }
+        if(decimals==false){
+          TempCal = (float)intBuf/(float)decimal;
+        }else{
+          TempCal = (float)intBuf;
+        }
+        EEPROM.writeShort(2, TempCal*100.0); // address, value
+        EEPROM.commit();
+        Prn(OUT, 1," shift "+String((float)EEPROM.readShort(2)/100.0)+"C° has been saved");
 
     // W
     }else if(incomingByte==87){
