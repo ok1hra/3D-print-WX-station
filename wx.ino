@@ -149,7 +149,7 @@ bool RainStatus;
 */
 // float mmInPulse = 0.87/(3.14*(FunelDiaInCM/2)*(FunelDiaInCM/2)/10); // calculate rain mm, in one pulse
 // float mmInPulse = 0.2 ; // callibration rain 17,7-20,2 mm with 95 pulse
-float mmInPulse = 0.65 ; // measure 3.8mm, reference 12.2mm
+float mmInPulse = 0; // 0.65 ; // measure 3.8mm, reference 12.2mm
 
 int WindDir = 0;
 int WindDirShift = 0;
@@ -222,6 +222,7 @@ int i = 0;
 1    -net ID
 2-3  - TempCal Short
 4    - HWREVpcb UChar
+5    - mmInPulse Short
 
 -13
 14-17  - SERIAL1_BAUDRATE
@@ -687,6 +688,13 @@ void setup() {
   // 4 HWREVpcb UChar
   if(EEPROM.readByte(4)!=255){
     HWREVpcb = EEPROM.readUChar(4);
+  }
+
+  // 5 mmInPulse Short
+  if(EEPROM.readByte(5)!=255){
+    mmInPulse = (float)EEPROM.readShort(5)/100.0;
+  }else{
+    mmInPulse = 0.65;
   }
 
   SERIAL1_BAUDRATE=EEPROM.readInt(14);
@@ -2033,7 +2041,6 @@ void CLI(){
           }
         }
 
-
       // C
       }else if(incomingByte==67){
         Prn(OUT, 0,"write temperature shift in C°, and press [");
@@ -2075,6 +2082,49 @@ void CLI(){
         EEPROM.writeShort(2, TempCal*100.0); // address, value
         EEPROM.commit();
         Prn(OUT, 1," shift "+String((float)EEPROM.readShort(2)/100.0)+"C° has been saved");
+
+
+      // R
+      }else if(incomingByte==82){
+        Prn(OUT, 0,"write rain in mm per pulse, and press [");
+        if(TelnetAuthorized==true){
+          Prn(OUT, 1,"enter]");
+        }else{
+          Prn(OUT, 1,";]");
+        }
+        Enter();
+        int intBuf=0;
+        int mult=1;
+        bool negativ = false;
+        bool decimals = true;
+        int decimal=1;
+        for (int j=InputByte[0]; j>0; j--){
+          // 0-9 || ,-.
+          if( (InputByte[j]>=48 && InputByte[j]<=57) || (InputByte[j]>=44 && InputByte[j]<=46) ){
+            if(InputByte[j]==45){
+              negativ = true;
+            }else if(InputByte[j]==44 || InputByte[j]==46){
+              decimals=false;
+            }else{
+              intBuf = intBuf + ((InputByte[j]-48)*mult);
+              mult = mult*10;
+              if(decimals==true){
+                decimal= decimal*10;
+              }
+            }
+          }
+        }
+        // if(negativ==true){
+        //   intBuf=-intBuf;
+        // }
+        if(decimals==false){
+          mmInPulse = (float)intBuf/(float)decimal;
+        }else{
+          mmInPulse = (float)intBuf;
+        }
+        EEPROM.writeShort(5, mmInPulse*100.0); // address, value
+        EEPROM.commit();
+        Prn(OUT, 1," rain "+String((float)EEPROM.readShort(5)/100.0)+"mm/pulse has been saved");
 
     // W
     }else if(incomingByte==87){
@@ -2594,6 +2644,8 @@ void ListCommands(int OUT){
     Prn(OUT, 1, String(WindDirShift)+"°]");
     Prn(OUT, 0,"      C  Temperature calibration shift [");
     Prn(OUT, 1, String(TempCal)+"°C]");
+    Prn(OUT, 0,"      R  rain mm per pulse [");
+    Prn(OUT, 1, String(mmInPulse)+"mm]");
 
     // #if defined(DS18B20)
     //   // Prn(OUT, 1,"      s  scan DS18B20 1wire temperature sensor");
