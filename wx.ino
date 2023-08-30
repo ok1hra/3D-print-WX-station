@@ -1348,9 +1348,9 @@ void MqttPubValue(){
       sensors.requestTemperatures();
       // float temperatureC = sensors.getTempCByIndex(0);
       float temperatureC = sensors.getTempC(insideThermometer);
-      MqttPubString("Temperature-Celsius-DS18B20", String(temperatureC+TempCal), false);
+      MqttPubString("Temperature-Celsius", String(temperatureC+TempCal), false);
     }else{
-      MqttPubString("Temperature-Celsius-DS18B20", "n/a", false);
+      // MqttPubString("Temperature-Celsius-DS18B20", "n/a", false);
       // MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
     }
   #endif
@@ -1358,7 +1358,9 @@ void MqttPubValue(){
     if(HTU21Denable==true){
       MqttPubString("HumidityRel-Percent-HTU21D", String(constrain(htu.readHumidity(), 0, 100)), false);
       MqttPubString("DewPoint-Celsius-HTU21D", String( (htu.readTemperature()+TempCal) - (100.0 - constrain(htu.readHumidity(), 0, 100)) / 5.0), false);
-      MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
+      if(ExtTemp==false){
+        MqttPubString("Temperature-Celsius", String(htu.readTemperature()+TempCal), false);
+      }
     }else{
       MqttPubString("HumidityRel-Percent-HTU21D", "n/a", false);
       // MqttPubString("Temperature-Celsius", "n/a", false);
@@ -2611,7 +2613,12 @@ void ListCommands(int OUT){
     Prn(OUT, 1, "             lifetime MAX    "+String(MinRpmPulse)+" ms|"+String(PulseToMetterBySecond(MinRpmPulse))+" m/s|"+String(PulseToMetterBySecond(MinRpmPulse)*3.6)+" km/h("+String(MinRpmPulseTimestamp)+")");
     #if defined(HTU21D)
       if(HTU21Denable==true){
-        Prn(OUT, 1, "  HTU21D Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"% | "+String(htu.readTemperature()+TempCal)+"°C ["+String(htu.readTemperature())+"°C raw] <- main");
+        Prn(OUT, 0, "  HTU21D Humidity relative "+String(constrain(htu.readHumidity(), 0, 100))+"% | "+String(htu.readTemperature()+TempCal)+"°C ["+String(htu.readTemperature())+"°C raw]");
+        if(ExtTemp==false){
+          Prn(OUT, 1, " <- master");
+        }else{
+          Prn(OUT, 1, "");
+        }
         Prn(OUT, 1, "  Dew point "+String( (htu.readTemperature()+TempCal) - (100.0 - constrain(htu.readHumidity(), 0, 100)) / 5.0)+"°C");
       }else{
         Prn(OUT, 1, "  HTU21D Humidity relative n/a");
@@ -2651,7 +2658,7 @@ void ListCommands(int OUT){
             ; // wait for serial port to connect. Needed for native USB port only
           }
         }
-        Prn(OUT, 1, "  DS18B20 Temperature "+String(temperatureC+TempCal)+"°C ["+String(temperatureC)+"°C raw]");
+        Prn(OUT, 1, "  DS18B20 Temperature "+String(temperatureC+TempCal)+"°C ["+String(temperatureC)+"°C raw] <- master");
       }
     #endif
     #if defined(RF69_EXTERNAL_SENSOR)
