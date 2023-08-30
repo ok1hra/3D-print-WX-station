@@ -496,7 +496,7 @@ String AprsCoordinates;
   #if HWREVsw==7
     #define ONE_WIRE_BUS 13
   #endif
-  #define TEMPERATURE_PRECISION 9 // 9-12
+  #define TEMPERATURE_PRECISION 10 // 9: ±0,5°C | 10: ±0,25°C | 11: ±0,125°C
   // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
   OneWire oneWire(ONE_WIRE_BUS);
   // Pass our oneWire reference to Dallas Temperature.
@@ -1343,17 +1343,6 @@ void MqttPubValue(){
       MqttPubString("RF-BattVoltage", vbat_radio, false);
     }
   #endif
-  #if defined(DS18B20)
-    if(ExtTemp==true){
-      sensors.requestTemperatures();
-      // float temperatureC = sensors.getTempCByIndex(0);
-      float temperatureC = sensors.getTempC(insideThermometer);
-      MqttPubString("Temperature-Celsius", String(temperatureC+TempCal), false);
-    }else{
-      // MqttPubString("Temperature-Celsius-DS18B20", "n/a", false);
-      // MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
-    }
-  #endif
   #if defined(HTU21D)
     if(HTU21Denable==true){
       MqttPubString("HumidityRel-Percent-HTU21D", String(constrain(htu.readHumidity(), 0, 100)), false);
@@ -1364,6 +1353,17 @@ void MqttPubValue(){
     }else{
       MqttPubString("HumidityRel-Percent-HTU21D", "n/a", false);
       // MqttPubString("Temperature-Celsius", "n/a", false);
+    }
+  #endif
+  #if defined(DS18B20)
+    if(ExtTemp==true){
+      sensors.requestTemperatures();
+      // float temperatureC = sensors.getTempCByIndex(0);
+      float temperatureC = sensors.getTempC(insideThermometer);
+      MqttPubString("Temperature-Celsius", String(temperatureC+TempCal), false);
+    }else{
+      // MqttPubString("Temperature-Celsius-DS18B20", "n/a", false);
+      // MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
     }
   #endif
 }
