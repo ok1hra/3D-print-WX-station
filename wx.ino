@@ -98,7 +98,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20230828";
+const char* REV = "20230830";
 #define HWREVsw 8                   // software PCB version [7-8]
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
@@ -260,6 +260,12 @@ bool needEEPROMcommit = false;
 unsigned int RebootWatchdog;
 unsigned int OutputWatchdog;
 unsigned long WatchdogTimer=0;
+
+//ajax
+// #include <WebServer.h>
+// #include "index.h"  //Web page header file
+// #include "index-cal.h"  //Web page header file
+// WebServer ajaxserver(HTTP_SERVER_PORT+9);
 
 WiFiServer server(HTTP_SERVER_PORT);
 WiFiServer server2(HTTP_SERVER_PORT+8);
@@ -503,7 +509,6 @@ String AprsCoordinates;
   // sensors.getAddress(deviceAddress, index)
   // DeviceAddress insideThermometer = { 0x28, 0x1D, 0x39, 0x31, 0x2, 0x0, 0x0, 0xF0 };
   // DeviceAddress outsideThermometer   = { 0x28, 0x3F, 0x1C, 0x31, 0x2, 0x0, 0x0, 0x2 };
-
 #endif
 
 //-------------------------------------------------------------------------------------------------------
@@ -694,7 +699,7 @@ void setup() {
   if(EEPROM.readByte(5)!=255){
     mmInPulse = (float)EEPROM.readShort(5)/100.0;
   }else{
-    mmInPulse = 0.65;
+    mmInPulse = 0.2;
   }
 
   SERIAL1_BAUDRATE=EEPROM.readInt(14);
@@ -990,6 +995,34 @@ void setup() {
    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
    RainCountDayOfMonth=UtcTime(2);
    Interrupts(true);
+
+   // ajax
+   // ajaxserver.on("/",HTTP_POST, handlePostRot);
+   // // ajaxserver.on("/STOP",HTTP_POST, handlePostStop);
+   // ajaxserver.on("/", handleRoot);      //This is display page
+   // ajaxserver.on("/readADC", handleADC);//To get update of ADC Value only
+   // ajaxserver.on("/readAZ", handleAZ);
+   // ajaxserver.on("/readFrontAZ", handleFrontAZ);
+   // ajaxserver.on("/readAZadc", handleAZadc);
+   // ajaxserver.on("/readStat", handleStat);
+   // ajaxserver.on("/readStart", handleStart);
+   // ajaxserver.on("/readMax", handleMax);
+   // ajaxserver.on("/readAnt", handleAnt);
+   // ajaxserver.on("/readAntName", handleAntName);
+   // ajaxserver.on("/readMapUrl", handleMapUrl);
+   // ajaxserver.on("/set", handleSet);
+   // ajaxserver.on("/cal", handleCal);
+   // ajaxserver.on("/readEndstop", handleEndstop);
+   // ajaxserver.on("/readEndstopLowZone", handleEndstopLowZone);
+   // ajaxserver.on("/readEndstopHighZone", handleEndstopHighZone);
+   // ajaxserver.on("/readCwraw", handleCwraw);
+   // ajaxserver.on("/readCcwraw", handleCcwraw);
+   // ajaxserver.on("/readMAC", handleMAC);
+   // ajaxserver.on("/readUptime", handleUptime);
+   // // ajaxserver.on("/cal/readAZ", handleAZ);
+   // ajaxserver.begin();                  //Start server
+   // Serial.println("HTTP ajax server started");
+
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -1001,6 +1034,8 @@ void loop() {
   CLI();
   Telnet();
   Watchdog();
+
+  // ajaxserver.handleClient();
 
   // check_radio();
 
@@ -1300,17 +1335,6 @@ void MqttPubValue(){
       // MqttPubString("TemperatureBak-Celsius", "n/a", false);
     }
   #endif
-  #if defined(DS18B20)
-    if(ExtTemp==true){
-      sensors.requestTemperatures();
-      // float temperatureC = sensors.getTempCByIndex(0);
-      float temperatureC = sensors.getTempC(insideThermometer);
-      MqttPubString("Temperature-Celsius-DS18B20", String(temperatureC), false);
-    }else{
-      MqttPubString("Temperature-Celsius-DS18B20", "n/a", false);
-      // MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
-    }
-  #endif
 
   #if defined(RF69_EXTERNAL_SENSOR)
     if(temp_radio.toInt()>0 && humidity_radio.toInt()>0 && vbat_radio.toInt()>0 && RF69enable==true){
@@ -1319,15 +1343,26 @@ void MqttPubValue(){
       MqttPubString("RF-BattVoltage", vbat_radio, false);
     }
   #endif
+  #if defined(DS18B20)
+    if(ExtTemp==true){
+      sensors.requestTemperatures();
+      // float temperatureC = sensors.getTempCByIndex(0);
+      float temperatureC = sensors.getTempC(insideThermometer);
+      MqttPubString("Temperature-Celsius-DS18B20", String(temperatureC+TempCal), false);
+    }else{
+      MqttPubString("Temperature-Celsius-DS18B20", "n/a", false);
+      // MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
+    }
+  #endif
   #if defined(HTU21D)
-  if(HTU21Denable==true){
-    MqttPubString("HumidityRel-Percent-HTU21D", String(constrain(htu.readHumidity(), 0, 100)), false);
-    MqttPubString("DewPoint-Celsius-HTU21D", String( (htu.readTemperature()+TempCal) - (100.0 - constrain(htu.readHumidity(), 0, 100)) / 5.0), false);
-    MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
-  }else{
-    MqttPubString("HumidityRel-Percent-HTU21D", "n/a", false);
-    // MqttPubString("Temperature-Celsius", "n/a", false);
-  }
+    if(HTU21Denable==true){
+      MqttPubString("HumidityRel-Percent-HTU21D", String(constrain(htu.readHumidity(), 0, 100)), false);
+      MqttPubString("DewPoint-Celsius-HTU21D", String( (htu.readTemperature()+TempCal) - (100.0 - constrain(htu.readHumidity(), 0, 100)) / 5.0), false);
+      MqttPubString("Temperature-Celsius-HTU21D", String(htu.readTemperature()+TempCal), false);
+    }else{
+      MqttPubString("HumidityRel-Percent-HTU21D", "n/a", false);
+      // MqttPubString("Temperature-Celsius", "n/a", false);
+    }
   #endif
 }
 
@@ -1550,14 +1585,14 @@ void AprsWxIgate() {
     // StrBuf=LeadingZero(3,htu.readTemperature()*1.8+32);
     StrBuf=LeadingZero(3,(bmp.readTemperature()+TempCal)*1.8+32);
 
-    // #if defined(DS18B20)
-    //   if(ExtTemp==true){
-    //     sensors.requestTemperatures();
-    //     // float temperatureF = sensors.getTempFByIndex(0);
-    //     float temperatureF = sensors.getTempC(insideThermometer);
-    //     StrBuf=LeadingZero(3,temperatureF*1.8+32);
-    //   }
-    // #endif
+    #if defined(DS18B20)
+      if(ExtTemp==true){
+        sensors.requestTemperatures();
+        // float temperatureF = sensors.getTempFByIndex(0);
+        float temperatureF = sensors.getTempC(insideThermometer);
+        StrBuf=LeadingZero(3,(temperatureF+TempCal)*1.8+32);
+      }
+    #endif
     //
     // #if defined(RF69_EXTERNAL_SENSOR)
     //   if(temp_radio.toInt()>0 && RF69enable==true){
@@ -2616,7 +2651,7 @@ void ListCommands(int OUT){
             ; // wait for serial port to connect. Needed for native USB port only
           }
         }
-        Prn(OUT, 1, "  DS18B20 Temperature "+String(temperatureC)+"°C");
+        Prn(OUT, 1, "  DS18B20 Temperature "+String(temperatureC+TempCal)+"°C ["+String(temperatureC)+"°C raw]");
       }
     #endif
     #if defined(RF69_EXTERNAL_SENSOR)
