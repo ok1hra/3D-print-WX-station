@@ -19,7 +19,7 @@
         RED      - neodym magnets
         GREEN    - bearings
 //------------------------------------------------------------------- */
-        Part             = 11;    // select part 1-16, -x=all, 17=variant of inner
+        Part             = -1;    // select part 1-16, -x=all, 17=variant of inner
                                    // ./render.sh bash script generate all parts
         BearingInTuning  = +20;    // +- smooth tuning bearing inner diameter in um
         MountDia         =  42;    // mm tube size for mounting
@@ -288,6 +288,8 @@ module CrosSupport(){
         translate([-2.85, 10.3, 3])  cube([16+1,13.5+1,20],center=true);
         // ROD
         translate([0,-RODshift, 3]) cylinder(h=20, d=6.2, $fn=30, center=true);
+        // external temp
+        translate([15,5, 3]) cylinder(h=20, d=5.5, $fn=30, center=true);
 
         }
     }

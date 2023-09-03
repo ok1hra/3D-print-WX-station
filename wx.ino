@@ -100,6 +100,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 //-------------------------------------------------------------------------------------------------------
 const char* REV = "20230830";
 #define HWREVsw 8                   // software PCB version [7-8]
+#define AJAX                        // enable ajax web server
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
@@ -261,11 +262,12 @@ unsigned int RebootWatchdog;
 unsigned int OutputWatchdog;
 unsigned long WatchdogTimer=0;
 
-//ajax
-// #include <WebServer.h>
-// #include "index.h"  //Web page header file
-// #include "index-cal.h"  //Web page header file
-// WebServer ajaxserver(HTTP_SERVER_PORT+9);
+#if defined(AJAX)
+  #include <WebServer.h>
+  #include "index.h"  //Web page header file
+  #include "index-cal.h"  //Web page header file
+  WebServer ajaxserver(HTTP_SERVER_PORT+9);
+#endif
 
 WiFiServer server(HTTP_SERVER_PORT);
 WiFiServer server2(HTTP_SERVER_PORT+8);
@@ -996,32 +998,32 @@ void setup() {
    RainCountDayOfMonth=UtcTime(2);
    Interrupts(true);
 
-   // ajax
-   // ajaxserver.on("/",HTTP_POST, handlePostRot);
-   // // ajaxserver.on("/STOP",HTTP_POST, handlePostStop);
-   // ajaxserver.on("/", handleRoot);      //This is display page
-   // ajaxserver.on("/readADC", handleADC);//To get update of ADC Value only
-   // ajaxserver.on("/readAZ", handleAZ);
-   // ajaxserver.on("/readFrontAZ", handleFrontAZ);
-   // ajaxserver.on("/readAZadc", handleAZadc);
-   // ajaxserver.on("/readStat", handleStat);
-   // ajaxserver.on("/readStart", handleStart);
-   // ajaxserver.on("/readMax", handleMax);
-   // ajaxserver.on("/readAnt", handleAnt);
-   // ajaxserver.on("/readAntName", handleAntName);
-   // ajaxserver.on("/readMapUrl", handleMapUrl);
-   // ajaxserver.on("/set", handleSet);
-   // ajaxserver.on("/cal", handleCal);
-   // ajaxserver.on("/readEndstop", handleEndstop);
-   // ajaxserver.on("/readEndstopLowZone", handleEndstopLowZone);
-   // ajaxserver.on("/readEndstopHighZone", handleEndstopHighZone);
-   // ajaxserver.on("/readCwraw", handleCwraw);
-   // ajaxserver.on("/readCcwraw", handleCcwraw);
-   // ajaxserver.on("/readMAC", handleMAC);
-   // ajaxserver.on("/readUptime", handleUptime);
-   // // ajaxserver.on("/cal/readAZ", handleAZ);
-   // ajaxserver.begin();                  //Start server
-   // Serial.println("HTTP ajax server started");
+   #if defined(AJAX)
+     // ajaxserver.on("/",HTTP_POST, handlePostRot);
+     ajaxserver.on("/", handleRoot);      //This is display page
+     ajaxserver.on("/set", handleSet);
+     ajaxserver.on("/cal", handleCal);
+     // ajaxserver.on("/readADC", handleADC);//To get update of ADC Value only
+     // ajaxserver.on("/readAZ", handleAZ);
+     // ajaxserver.on("/readFrontAZ", handleFrontAZ);
+     // ajaxserver.on("/readAZadc", handleAZadc);
+     // ajaxserver.on("/readStat", handleStat);
+     // ajaxserver.on("/readStart", handleStart);
+     // ajaxserver.on("/readMax", handleMax);
+     // ajaxserver.on("/readAnt", handleAnt);
+     // ajaxserver.on("/readAntName", handleAntName);
+     // ajaxserver.on("/readMapUrl", handleMapUrl);
+     // ajaxserver.on("/readEndstop", handleEndstop);
+     // ajaxserver.on("/readEndstopLowZone", handleEndstopLowZone);
+     // ajaxserver.on("/readEndstopHighZone", handleEndstopHighZone);
+     // ajaxserver.on("/readCwraw", handleCwraw);
+     // ajaxserver.on("/readCcwraw", handleCcwraw);
+     // ajaxserver.on("/readMAC", handleMAC);
+     // ajaxserver.on("/readUptime", handleUptime);
+     // ajaxserver.on("/cal/readAZ", handleAZ);
+     ajaxserver.begin();                  //Start server
+     Serial.println("HTTP ajax server started");
+   #endif
 
 }
 
@@ -1035,7 +1037,9 @@ void loop() {
   Telnet();
   Watchdog();
 
-  // ajaxserver.handleClient();
+  #if defined(AJAX)
+    ajaxserver.handleClient();
+  #endif
 
   // check_radio();
 
@@ -4618,3 +4622,983 @@ void testFileIO(fs::FS &fs, const char * path){
     Serial.println();
   }
 #endif
+
+
+//-------------------------------------------------------------------------------------------------------
+#if defined(AJAX)
+
+// ajax rx
+// void handlePostRot() {
+//  // String s = MAIN_page; //Read HTML contents
+//  String str = ajaxserver.arg("ROT");
+//  if(Status==0){
+//    AzimuthTarget = str.toInt() - StartAzimuth;
+//    if(AzimuthTarget<0){
+//        AzimuthTarget = 360+AzimuthTarget;
+//    }
+//    MqttPubString("AzimuthTarget", String(AzimuthTarget), false);
+//    RotCalculate();
+//  }else{
+//    if(Status<0){
+//      Status=-3;
+//    }else{
+//      Status=3;
+//    }
+//  }
+// }
+
+void handleSet() {
+
+  String yourcallERR= "";
+  String rotidERR= "";
+  String rotnameERR= "";
+  String startazimuthERR= "";
+  String maxrotatedegreeERR= "";
+  String antradiationangleERR= "";
+  String oneturnlimitsecERR= "";
+  String pulseperdegreeERR= "";
+  String pulseperdegreeSTYLE= "";
+  String pwmenableSTYLE= "";
+  String twowireSTYLE= "";
+  String pulseperdegreeDisable= "";
+  String pwmenableDisable= "";
+  String twowireDisable= "";
+  String mapurlERR= "";
+  String mqttERR= "";
+  String mqttportERR= "";
+  String edstoplowzoneERR= "";
+  String edstoplowzoneSTYLE= "";
+  String edstoplowzoneDisable= "";
+  String edstophighzoneERR= "";
+  String edstophighzoneSTYLE= "";
+  String edstophighzoneDisable= "";
+  String edstopsCHECKED= "";
+  String edstopsSTYLE= "";
+  String acmotorCHECKED= "";
+  String motorSELECT0= "";
+  String motorSELECT1= "";
+  String pwmSELECT0= "";
+  String pwmSELECT1= "";
+  String sourceSELECT0= "";
+  String sourceSELECT1= "";
+  String baudSELECT0= "";
+  String baudSELECT1= "";
+  String baudSELECT2= "";
+  String baudSELECT3= "";
+  String baudSELECT4= "";
+  String twowireSELECT0= "";
+  String twowireSELECT1= "";
+  String preampSELECT0= "";
+  String preampSELECT1= "";
+
+  if ( ajaxserver.hasArg("yourcall") == false \
+    && ajaxserver.hasArg("rotid") == false \
+    && ajaxserver.hasArg("rotname") == false \
+    && ajaxserver.hasArg("startazimuth") == false \
+    && ajaxserver.hasArg("maxrotatedegree") == false \
+    && ajaxserver.hasArg("mapurl") == false \
+    && ajaxserver.hasArg("antradiationangle") == false \
+    && ajaxserver.hasArg("edstoplowzone") == false \
+    && ajaxserver.hasArg("edstophighzone") == false \
+  ) {
+    // MqttPubString("Debug", "Form not valid", false);
+  }else{
+    // MqttPubString("Debug", "Form valid", false);
+
+
+
+
+// Altitude
+// WindDirShift
+// TempCal - Temperature calibration shift
+// mmInPulse - rain mm per pulse
+// MQTT broker IP | "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT));
+// MeasureTimer - TX repeat time ["+String(MeasureTimer[1]/60000)+" min]");
+// AprsON
+// String AprsPassword;
+// String AprsCoordinates;
+
+
+
+
+
+
+
+    // YOUR_CALL / topic
+    if ( ajaxserver.arg("yourcall").length()<1 || ajaxserver.arg("yourcall").length()>20){
+      yourcallERR= " Out of range 1-20 characters";
+    }else{
+      String str = String(ajaxserver.arg("yourcall"));
+      if(YOUR_CALL == str){
+        yourcallERR="";
+      }else{
+        yourcallERR=" Warning: MQTT topic has changed.";
+        YOUR_CALL = String(ajaxserver.arg("yourcall"));
+
+        int str_len = str.length();
+        char char_array[str_len];
+        str.toCharArray(char_array, str_len+1);
+        for (int i=0; i<20; i++){
+          if(i < str_len){
+            EEPROM.write(141+i, char_array[i]);
+          }else{
+            EEPROM.write(141+i, 0xff);
+          }
+        }
+        // EEPROM.commit();
+      }
+    }
+
+    // NET_ID
+    if ( ajaxserver.arg("rotid").length()<1 || ajaxserver.arg("rotid").length()>2){
+      rotidERR= " Out of range 1-2 characters";
+    }else{
+      String str = String(ajaxserver.arg("rotid"));
+      if(NET_ID == str){
+        rotidERR="";
+      }else{
+        rotidERR=" Warning: MQTT topic has changed.";
+        NET_ID = String(ajaxserver.arg("rotid"));
+
+        int str_len = str.length();
+        char char_array[str_len];
+        str.toCharArray(char_array, str_len+1);
+        for (int i=0; i<2; i++){
+          if(i < str_len){
+            EEPROM.write(i, char_array[i]);
+          }else{
+            EEPROM.write(i, 0xff);
+          }
+        }
+        // EEPROM.commit();
+      }
+    }
+
+    // RotName
+    if ( ajaxserver.arg("rotname").length()<1 || ajaxserver.arg("rotname").length()>20){
+      rotnameERR= " Out of range 1-20 characters";
+    }else{
+      String str = String(ajaxserver.arg("rotname"));
+      if(RotName == str){
+        rotnameERR="";
+      }else{
+        rotnameERR="";
+        RotName = String(ajaxserver.arg("rotname"));
+
+        int str_len = str.length();
+        char char_array[str_len];
+        str.toCharArray(char_array, str_len+1);
+        for (int i=0; i<19; i++){
+          if(i < str_len){
+            EEPROM.write(2+i, char_array[i]);
+          }else{
+            EEPROM.write(2+i, 0xff);
+          }
+        }
+        // EEPROM.commit();
+        MqttPubString("Name", String(RotName), true);
+      }
+    }
+
+    // StartAzimuth
+    if ( ajaxserver.arg("startazimuth").length()<1 || ajaxserver.arg("startazimuth").toInt()<0 || ajaxserver.arg("startazimuth").toInt()>359){
+      startazimuthERR= " Out of range number 0-359";
+    }else{
+      if(StartAzimuth == ajaxserver.arg("startazimuth").toInt()){
+        startazimuthERR="";
+      }else{
+        startazimuthERR="";
+        StartAzimuth = ajaxserver.arg("startazimuth").toInt();
+        EEPROM.writeUShort(23, StartAzimuth);
+        // EEPROM.commit();
+        MqttPubString("StartAzimuth", String(StartAzimuth), true);
+      }
+    }
+
+    // MaxRotateDegree
+    if ( ajaxserver.arg("maxrotatedegree").length()<1 || ajaxserver.arg("maxrotatedegree").toInt()<0 || ajaxserver.arg("maxrotatedegree").toInt()>719){
+      maxrotatedegreeERR= " Out of range number 0-719";
+    }else{
+      if(MaxRotateDegree == ajaxserver.arg("maxrotatedegree").toInt()){
+        maxrotatedegreeERR="";
+      }else{
+        maxrotatedegreeERR="";
+        MaxRotateDegree = ajaxserver.arg("maxrotatedegree").toInt();
+        EEPROM.writeUShort(25, MaxRotateDegree);
+        // EEPROM.commit();
+        MqttPubString("MaxRotateDegree", String(MaxRotateDegree), true);
+      }
+    }
+
+    // AntRadiationAngle
+    if ( ajaxserver.arg("antradiationangle").length()<1 || ajaxserver.arg("antradiationangle").toInt()<0 || ajaxserver.arg("antradiationangle").toInt()>180){
+      antradiationangleERR= " Out of range number 1-180";
+    }else{
+      if(AntRadiationAngle == ajaxserver.arg("antradiationangle").toInt()){
+        antradiationangleERR="";
+      }else{
+        antradiationangleERR="";
+        AntRadiationAngle = ajaxserver.arg("antradiationangle").toInt();
+        EEPROM.writeUShort(27, AntRadiationAngle);
+        // EEPROM.commit();
+        MqttPubString("AntRadiationAngle", String(AntRadiationAngle), true);
+      }
+    }
+
+    // MapUrl
+    if ( ajaxserver.arg("mapurl").length()<1 || ajaxserver.arg("mapurl").length()>50){
+      mapurlERR= " Out of range 1-50 characters";
+    }else{
+      String str = String(ajaxserver.arg("mapurl"));
+      if(MapUrl == str){
+        mapurlERR="";
+      }else{
+        mapurlERR="";
+        MapUrl = String(ajaxserver.arg("mapurl"));
+
+        int str_len = str.length();
+        char char_array[str_len];
+        str.toCharArray(char_array, str_len+1);
+        for (int i=0; i<50; i++){
+          if(i < str_len){
+            EEPROM.write(169+i, char_array[i]);
+          }else{
+            EEPROM.write(169+i, 0xff);
+          }
+        }
+        // EEPROM.commit();
+      }
+    }
+
+    // 223 AZsource
+    if(ajaxserver.arg("source").toInt()==0 && AZsource==true){
+      AZsource = false;
+      EEPROM.writeBool(223, 0);
+      MqttPubString("AZsource", "Potentiometer", true);
+    }else if(ajaxserver.arg("source").toInt()==1 && AZsource==false){
+      AZsource = true;
+      EEPROM.writeBool(223, 1);
+      MqttPubString("AZsource", "CW/CCW pulse", true);
+      if(Endstop == false){
+        Endstop = true;
+        EEPROM.writeBool(29, Endstop);
+        MqttPubString("EndstopUse", String(Endstop), true);
+      }
+    }
+
+    // 224-225 PulsePerDegree
+    if ( ajaxserver.arg("pulseperdegree").length()<1 || ajaxserver.arg("pulseperdegree").toInt()<1 || ajaxserver.arg("pulseperdegree").toInt()>100){
+      // pulseperdegreeERR= " Out of range number 1-100";
+    }else{
+      if(PulsePerDegree == ajaxserver.arg("pulseperdegree").toInt()){
+        pulseperdegreeERR="";
+      }else{
+        pulseperdegreeERR="";
+        PulsePerDegree = ajaxserver.arg("pulseperdegree").toInt();
+        EEPROM.writeUShort(224, PulsePerDegree);
+        // EEPROM.commit();
+        MqttPubString("PulsePerDegree", String(PulsePerDegree), true);
+      }
+    }
+
+    // 29  - Endstop
+    if(ajaxserver.arg("edstops").toInt()==1 && Endstop==false){
+      Endstop = true;
+      EEPROM.writeBool(29, Endstop);
+      // EEPROM.commit();
+      MqttPubString("EndstopUse", String(Endstop), true);
+    }else if(ajaxserver.arg("edstops").toInt()!=1 && Endstop==true){
+      if(AZsource == true){ //pulse
+        Endstop=true;
+      }else{  // potentiometer
+        Endstop = false;
+      }
+      EEPROM.writeBool(29, Endstop);
+      // EEPROM.commit();
+      MqttPubString("EndstopUse", String(Endstop), true);
+    }
+
+    // 228 AZtwoWire
+    if(ajaxserver.arg("twowire").toInt()==1 && AZtwoWire==false){
+      AZtwoWire = true;
+      digitalWrite(AZtwoWirePin, AZtwoWire);
+      EEPROM.writeBool(228, AZtwoWire);
+      MqttPubString("AZpotentiometer", "2-wire", true);
+    }else if(ajaxserver.arg("twowire").toInt()!=1 && AZtwoWire==true){
+      AZtwoWire = false;
+      digitalWrite(AZtwoWirePin, AZtwoWire);
+      EEPROM.writeBool(228, AZtwoWire);
+      MqttPubString("AZpotentiometer", "3-wire", true);
+    }
+
+    // 229 AZpreamp
+    if(ajaxserver.arg("preamp").toInt()==1 && AZpreamp==false){
+      AZpreamp = true;
+      digitalWrite(AZpreampPin, AZpreamp);
+      EEPROM.writeBool(229, AZpreamp);
+      MqttPubString("AZpreamp", "ON", true);
+    }else if(ajaxserver.arg("preamp").toInt()!=1 && AZpreamp==true){
+      AZpreamp = false;
+      digitalWrite(AZpreampPin, AZpreamp);
+      EEPROM.writeBool(229, AZpreamp);
+      MqttPubString("AZpreamp", "OFF", true);
+    }
+
+    // 36 - NoEndstopLowZone
+    if ( ajaxserver.arg("edstoplowzone").length()<1 || ajaxserver.arg("edstoplowzone").toInt()<2 || ajaxserver.arg("edstoplowzone").toInt()>15){
+      // edstoplowzoneERR= " Out of range number 2-15";
+    }else{
+      if(NoEndstopLowZone == float(ajaxserver.arg("edstoplowzone").toInt())/10 ) {
+        edstoplowzoneERR="";
+      }else{
+        edstoplowzoneERR="";
+        NoEndstopLowZone = float(ajaxserver.arg("edstoplowzone").toInt())/10;
+        // NoEndstopHighZone = 3.3 - NoEndstopLowZone;
+        // NoEndstopLowZone = NoEndstopLowZone;
+        EEPROM.writeByte(36, int(NoEndstopLowZone*10));
+        // EEPROM.commit();
+        MqttPubString("NoEndstopLowZone", String(NoEndstopLowZone), true);
+      }
+    }
+
+    // 222 - NoEndstopHighZone
+    if ( ajaxserver.arg("edstophighzone").length()<1 || ajaxserver.arg("edstophighzone").toInt()<16 || ajaxserver.arg("edstophighzone").toInt()>31){
+      // edstophighzoneERR= " Out of range number 16-31";
+    }else{
+      if(NoEndstopHighZone == float(ajaxserver.arg("edstophighzone").toInt())/10 ) {
+        edstophighzoneERR="";
+      }else{
+        edstophighzoneERR="";
+        NoEndstopHighZone = float(ajaxserver.arg("edstophighzone").toInt())/10;
+        // NoEndstopHighZone = 3.3 - NoEndstopLowZone;
+        // NoEndstopLowZone = NoEndstopLowZone;
+        EEPROM.writeByte(222, int(NoEndstopHighZone*10));
+        // EEPROM.commit();
+        MqttPubString("NoEndstopHighZone", String(NoEndstopHighZone), true);
+      }
+    }
+
+    // 220 OneTurnLimitSec
+    if ( ajaxserver.arg("oneturnlimitsec").length()<2 || ajaxserver.arg("oneturnlimitsec").toInt()<20 || ajaxserver.arg("oneturnlimitsec").toInt()>600){
+      oneturnlimitsecERR= " Out of range number 20-600";
+    }else{
+      if(OneTurnLimitSec == ajaxserver.arg("oneturnlimitsec").toInt()){
+        oneturnlimitsecERR="";
+      }else{
+        oneturnlimitsecERR="";
+        OneTurnLimitSec = ajaxserver.arg("oneturnlimitsec").toInt();
+        EEPROM.writeUShort(220, OneTurnLimitSec);
+        // EEPROM.commit();
+        MqttPubString("OneTurnLimitSec", String(OneTurnLimitSec), true);
+      }
+    }
+
+    // motor
+    // MqttPubString("Debug Motor", String(ajaxserver.arg("motor")), false);
+    // MqttPubString("Debug Motor2", String(ajaxserver.hasArg("motor")), false);
+    if(ajaxserver.arg("motor").toInt()==0 && ACmotor==true){
+      ACmotor = false;
+      EEPROM.writeBool(30, 0);
+      MqttPubString("Motor", "DC", true);
+    }else if(ajaxserver.arg("motor").toInt()==1 && ACmotor==false){
+      ACmotor = true;
+      EEPROM.writeBool(30, 1);
+      MqttPubString("Motor", "AC", true);
+    }
+
+    // 231 - PWMenable = true;
+    if(ajaxserver.arg("pwmenable").toInt()==0 && PWMenable==true){
+      PWMenable = false;
+      EEPROM.writeBool(231, 0);
+      MqttPubString("PWMenable", "OFF", true);
+    }else if(ajaxserver.arg("pwmenable").toInt()==1 && PWMenable==false){
+      PWMenable = true;
+      EEPROM.writeBool(231, 1);
+      MqttPubString("PWMenable", "ON", true);
+    }
+
+    // 226-227 BaudRate
+    static int BaudRateTmp=115200;
+    switch (ajaxserver.arg("baud").toInt()) {
+      case 0: {BaudRateTmp= 1200; break; }
+      case 1: {BaudRateTmp= 2400; break; }
+      case 2: {BaudRateTmp= 4800; break; }
+      case 3: {BaudRateTmp= 9600; break; }
+      case 4: {BaudRateTmp= 115200; break; }
+    }
+    if(BaudRateTmp!=BaudRate){
+      BaudRate=BaudRateTmp;
+      EEPROM.writeUShort(226, BaudRate);
+      MqttPubString("USB-BaudRate", String(BaudRate), true);
+      Serial.println("Baudrate change to "+String(BaudRate)+"...");
+      Serial.flush();
+      // Serial.end();
+      delay(1000);
+      Serial.begin(BaudRate);
+      delay(500);
+      Serial.println();
+      Serial.println();
+      Serial.println("New Baudrate "+String(BaudRate));
+    }
+
+    // 161-164 - MQTT broker IP
+    if ( ajaxserver.arg("mqttip0").length()<1 || ajaxserver.arg("mqttip0").toInt()>255){
+      mqttERR= " Out of range number 0-255";
+    }else{
+      if(mqtt_server_ip[0] == byte(ajaxserver.arg("mqttip0").toInt()) ){
+        mqttERR="";
+      }else{
+        mqttERR=" Warning: MQTT broker IP has changed.";
+        mqtt_server_ip[0] = byte(ajaxserver.arg("mqttip0").toInt()) ;
+        EEPROM.writeByte(161, mqtt_server_ip[0]);
+      }
+    }
+
+    if ( ajaxserver.arg("mqttip1").length()<1 || ajaxserver.arg("mqttip1").toInt()>255){
+      mqttERR= " Out of range number 0-255";
+    }else{
+      if(mqtt_server_ip[1] == byte(ajaxserver.arg("mqttip1").toInt()) ){
+        mqttERR="";
+      }else{
+        mqttERR=" Warning: MQTT broker IP has changed.";
+        mqtt_server_ip[1] = byte(ajaxserver.arg("mqttip1").toInt()) ;
+        EEPROM.writeByte(162, mqtt_server_ip[1]);
+      }
+    }
+
+    if ( ajaxserver.arg("mqttip2").length()<1 || ajaxserver.arg("mqttip2").toInt()>255){
+      mqttERR= " Out of range number 0-255";
+    }else{
+      if(mqtt_server_ip[2] == byte(ajaxserver.arg("mqttip2").toInt()) ){
+        mqttERR="";
+      }else{
+        mqttERR=" Warning: MQTT broker IP has changed.";
+        mqtt_server_ip[2] = byte(ajaxserver.arg("mqttip2").toInt()) ;
+        EEPROM.writeByte(163, mqtt_server_ip[2]);
+      }
+    }
+
+    if ( ajaxserver.arg("mqttip3").length()<1 || ajaxserver.arg("mqttip3").toInt()>255){
+      mqttERR= " Out of range number 0-255";
+    }else{
+      if(mqtt_server_ip[3] == byte(ajaxserver.arg("mqttip3").toInt()) ){
+        mqttERR="";
+      }else{
+        mqttERR=" Warning: MQTT broker IP has changed.";
+        mqtt_server_ip[3] = byte(ajaxserver.arg("mqttip3").toInt()) ;
+        EEPROM.writeByte(164, mqtt_server_ip[3]);
+      }
+    }
+
+    // 165-166 - MQTT_PORT
+    if ( ajaxserver.arg("mqttport").length()<1 || ajaxserver.arg("mqttport").toInt()<1 || ajaxserver.arg("mqttport").toInt()>65535){
+      mqttportERR= " Out of range number 1-65535";
+    }else{
+      if(MQTT_PORT == ajaxserver.arg("mqttport").toInt()){
+        mqttportERR="";
+      }else{
+        mqttportERR=" Warning: MQTT broker PORT has changed.";
+        MQTT_PORT = ajaxserver.arg("mqttport").toInt();
+        EEPROM.writeUShort(165, MQTT_PORT);
+      }
+    }
+
+
+    EEPROM.commit();
+  } // else form valid
+
+if(AZsource==true){
+  sourceSELECT0= "";
+  sourceSELECT1= " selected";
+  pulseperdegreeDisable="";
+  pulseperdegreeSTYLE="";
+  twowireSTYLE=" style='text-decoration: line-through; color: #555;'";
+  twowireDisable=" disabled";
+}else{
+  sourceSELECT0= " selected";
+  sourceSELECT1= "";
+  pulseperdegreeDisable=" disabled";
+  pulseperdegreeSTYLE=" style='text-decoration: line-through; color: #555;'";
+  twowireDisable="";
+  twowireSTYLE="";
+}
+
+if(AZtwoWire==true){
+  twowireSELECT0= "";
+  twowireSELECT1= " selected";
+}else{
+  twowireSELECT0= " selected";
+  twowireSELECT1= "";
+}
+
+if(AZpreamp==true){
+  preampSELECT0= "";
+  preampSELECT1= " selected";
+}else{
+  preampSELECT0= " selected";
+  preampSELECT1= "";
+}
+
+if(Endstop==true){
+  edstopsCHECKED= "checked";
+  edstopsSTYLE="";
+  edstoplowzoneDisable=" disabled";
+  edstophighzoneDisable=" disabled";
+  edstoplowzoneSTYLE=" style='text-decoration: line-through; color: #555;'";
+  edstophighzoneSTYLE=" style='text-decoration: line-through; color: #555;'";
+}else{
+  edstoplowzoneSTYLE=" style='color: orange;'";
+  edstophighzoneSTYLE=" style='color: orange;'";
+  edstopsCHECKED= "";
+  // edstopsSTYLE=" style='text-decoration: line-through; color: #555;'";
+}
+
+baudSELECT0= "";
+baudSELECT1= "";
+baudSELECT2= "";
+baudSELECT3= "";
+baudSELECT4= "";
+switch (BaudRate) {
+  case 1200: {baudSELECT0= " selected"; break; }
+  case 2400: {baudSELECT1= " selected"; break; }
+  case 4800: {baudSELECT2= " selected"; break; }
+  case 9600: {baudSELECT3= " selected"; break; }
+  case 115200: {baudSELECT4= " selected"; break; }
+}
+
+if(ACmotor==true){
+  motorSELECT0= "";
+  motorSELECT1= " selected";
+  pwmenableSTYLE=" style='text-decoration: line-through; color: #555;'";
+  pwmenableDisable=" disabled";
+}else{
+  motorSELECT0= " selected";
+  motorSELECT1= "";
+  pwmenableSTYLE="";
+  pwmenableDisable="";
+}
+
+if(PWMenable==true){
+  pwmSELECT0= "";
+  pwmSELECT1= " selected";
+}else{
+  pwmSELECT0= " selected";
+  pwmSELECT1= "";
+}
+
+  String HtmlSrc = "<!DOCTYPE html><html><head><title>SETUP</title>\n";
+  HtmlSrc +="<meta http-equiv='Content-Type' content='text/html; charset=UTF-8'>\n";
+  // <meta http-equiv = 'refresh' content = '600; url = /'>\n";
+  HtmlSrc +="<style type='text/css'> button#go {background-color: #ccc; padding: 5px 20px 5px 20px; border: none; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;} button#go:hover {background-color: orange;} table, th, td {color: #fff; border-collapse: collapse; border:0px } .tdr {color: #0c0; height: 40px; text-align: right; vertical-align: middle; padding-right: 15px} html,body {background-color: #333; text-color: #ccc; font-family: 'Roboto Condensed',sans-serif,Arial,Tahoma,Verdana;} a:hover {color: #fff;} a { color: #ccc; text-decoration: underline;} ";
+  HtmlSrc +=".b {border-top: 1px dotted #666;} .tooltip-text {visibility: hidden; position: absolute; z-index: 1; width: 300px; color: white; font-size: 12px; background-color: #DE3163; border-radius: 10px; padding: 10px 15px 10px 15px; } .hover-text:hover .tooltip-text { visibility: visible; } #right { top: -30px; left: 200%; } #top { top: -60px; left: -150%; } #left { top: -8px; right: 120%;}";
+  HtmlSrc +=".hover-text {position: relative; background: #888; padding: 5px 12px; margin: 5px; font-size: 15px; border-radius: 100%; color: #FFF; display: inline-block; text-align: center; }</style>\n";
+  HtmlSrc +="<link href='http://fonts.googleapis.com/css?family=Roboto+Condensed:300italic,400italic,700italic,400,700,300&subset=latin-ext' rel='stylesheet' type='text/css'></head><body>\n";
+  HtmlSrc +="<H1 style='color: #666; text-align: center;'>Setup<br><span style='font-size: 50%;'>(MAC ";
+  HtmlSrc +=MACString;
+  HtmlSrc +="|FW ";
+  HtmlSrc +=REV;
+  HtmlSrc +="|HW ";
+  HtmlSrc +=String(HardwareRev);
+  HtmlSrc +=")</span><span style='color: #333;'>";
+  HtmlSrc +=String(HWidValue);
+  HtmlSrc +="</span></H1><div style='display: flex; justify-content: center;'><table><form action='/set' method='post' style='color: #ccc; margin: 50 0 0 0; text-align: center;'>\n";
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='yourcall'>Your callsign:</label></td><td><input type='text' id='yourcall' name='yourcall' size='10' value='";
+  HtmlSrc += YOUR_CALL;
+  HtmlSrc +="'><span style='color:red;'>";
+  HtmlSrc += yourcallERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>Used as part of an MQTT topic</span></td></tr>\n<tr><td class='tdr'><label for='rotid'>Rotator ID:</label></td><td><input type='text' id='rotid' name='rotid' size='2' value='";
+  HtmlSrc += NET_ID;
+  HtmlSrc +="'><span style='color:red;'>";
+  HtmlSrc += rotidERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 300px;'>[1-2 chars]<br>Multiple rotators with the same TOPIC must have different IDs<br>Second part of MQTT topic</span></span></td></tr>\n<tr><td class='tdr'><label for='rotname'>Rotator name:</label></td><td><input type='text' id='rotname' name='rotname' size='20' value='";
+  HtmlSrc += RotName;
+  HtmlSrc +="'><span style='color:red;'>";
+  HtmlSrc += rotnameERR;
+  HtmlSrc +="</span></td></tr>\n<tr><td class='tdr'><label for='startazimuth'>Start CCW azimuth:</label></td><td><input type='text' id='startazimuth' name='startazimuth' size='3' value='";
+  HtmlSrc += StartAzimuth;
+  HtmlSrc +="'>&deg; <span style='color:red;'>";
+  HtmlSrc += startazimuthERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[0-359&deg;]</span></span></td></tr>\n<tr><td class='tdr'><label for='maxrotatedegree'>Rotation range in degrees:</label></td><td><input type='text' id='maxrotatedegree' name='maxrotatedegree' size='3' value='";
+  HtmlSrc += MaxRotateDegree;
+  HtmlSrc +="'>&deg; <span style='color:red;'>";
+  HtmlSrc += maxrotatedegreeERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Range from CCW to CW endstop in degrees</span></span></td></tr>\n<tr><td class='tdr'><label for='mapurl'>Background azimuth map URL:</label></td><td><input type='text' id='mapurl' name='mapurl' size='30' value='";
+  HtmlSrc += MapUrl;
+  HtmlSrc +="'><span style='color:red;'>";
+  HtmlSrc += mapurlERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='left'>DXCC generated every quarter hour is available at https://remoteqth.com/xplanet/. If you need another, please contact OK1HRA, or run own services.</span></span> <a href='https://remoteqth.com/xplanet/' target='_blank'>Available list</a></td></tr>\n";
+  HtmlSrc +="<tr><td class='tdr'><label for='antradiationangle'>Antenna radiation angle in degrees:</label></td><td><input type='text' id='antradiationangle' name='antradiationangle' size='3' value='";
+  HtmlSrc += AntRadiationAngle;
+  HtmlSrc +="'>&deg; <span style='color:red;'>";
+  HtmlSrc += antradiationangleERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[1-180&deg;]</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='source'>Azimuth source:</label></td><td><select name='source' id='source'><option value='0'";
+  HtmlSrc += sourceSELECT0;
+  HtmlSrc +=">Potentiometer</option><option value='1'";
+  HtmlSrc += sourceSELECT1;
+  HtmlSrc +=">CW/CCW pulse</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Pulse deactivate control with KEY, and SW endstop</span></span></td></tr>\n";
+  HtmlSrc +="<tr><td class='tdr'><label for='pulseperdegree'><span";
+  HtmlSrc += pulseperdegreeSTYLE;
+  HtmlSrc +=">Pulse count per degree:</span></label></td><td><input type='text' id='pulseperdegree' name='pulseperdegree' size='3' value='";
+  HtmlSrc += PulsePerDegree;
+  HtmlSrc +="'";
+  HtmlSrc += pulseperdegreeDisable;
+  HtmlSrc +="><span style='color:red;'>";
+  HtmlSrc += pulseperdegreeERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[1-100]</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr><td class='tdr'><label for='twowire'><span";
+  HtmlSrc += twowireSTYLE;
+  HtmlSrc +=">Azimuth potentiometer:</span></label></td><td><select name='twowire' id='twowire'";
+  HtmlSrc += twowireDisable;
+  HtmlSrc +="><option value='0'";
+  HtmlSrc += twowireSELECT0;
+  HtmlSrc +=">3 Wire</option><option value='1'";
+  HtmlSrc += twowireSELECT1;
+  HtmlSrc +=">2 Wire</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>2 wire use 9mA CC source<br>3 wire use 9V CV source</span></span>";
+  if(AZtwoWire==true && AZpreamp==true){
+    HtmlSrc +="<br><span style='color: red;'>Recommend using a 3-wire potentiometer with the preamplifier ON</span>";
+  }
+  HtmlSrc +="</td></tr>\n";
+
+  HtmlSrc +="<tr><td class='tdr'><label for='preamp'><span";
+  HtmlSrc += twowireSTYLE;
+  HtmlSrc +=">Azimuth gain/shift op-amp:</span></label></td><td><select name='preamp' id='preamp'";
+  HtmlSrc += twowireDisable;
+  HtmlSrc +="><option value='0'";
+  HtmlSrc += preampSELECT0;
+  HtmlSrc +=">OFF</option><option value='1'";
+  HtmlSrc += preampSELECT1;
+  HtmlSrc +=">ON</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>For potentiometer use one turn from any<br>Need manualy preset with two trimmer<br>More in Wiki page</span></span></td></tr>\n";
+
+  // if(AZsource==false){ // potentiometer
+    HtmlSrc +="<tr class='b'><td class='tdr'><label for='edstops'><span";
+    HtmlSrc += edstopsSTYLE;
+    HtmlSrc +=">Hardware endstops INSTALLED:</span></label></td><td><input type='checkbox' id='edstops' name='edstops' value='1' ${postData.edstops?'checked':''} ";
+    HtmlSrc += edstopsCHECKED;
+    HtmlSrc +="><span class='hover-text'>?<span class='tooltip-text' id='top'>If disabled, it reduces the range of the potentiometer by the forbidden zone on edges</span></span></td></tr>\n";
+      HtmlSrc +="<tr><td class='tdr'><label for='edstoplowzone'><span";
+      HtmlSrc += edstoplowzoneSTYLE;
+      HtmlSrc +=">CCW forbidden zone<br>(software endstops):</span></label></td><td><input type='text' id='edstoplowzone' name='edstoplowzone' size='3' value='";
+      HtmlSrc += int(NoEndstopLowZone*10);
+      HtmlSrc +="'";
+      HtmlSrc += edstoplowzoneDisable;
+      HtmlSrc +="> tenths of a Volt <span style='color:red;'>";
+      HtmlSrc += edstoplowzoneERR;
+      HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[2-15] tenths of a Volt</span></span></td></tr>\n";
+
+      HtmlSrc +="<tr><td class='tdr'><label for='edstophighzone'><span";
+      HtmlSrc += edstophighzoneSTYLE;
+      HtmlSrc +=">CW forbidden zone<br>(software endstops):</span></label></td><td><input type='text' id='edstophighzone' name='edstophighzone' size='3' value='";
+      HtmlSrc += int(NoEndstopHighZone*10);
+      HtmlSrc +="'";
+      HtmlSrc += edstophighzoneDisable;
+      HtmlSrc +="> tenths of a Volt <span style='color:red;'>";
+      HtmlSrc += edstophighzoneERR;
+      HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[16-31] tenths of a Volt</span></span></td></tr>\n";
+  // }
+
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='oneturnlimitsec'>Watchdog speed:</label></td><td><input type='text' id='oneturnlimitsec' name='oneturnlimitsec' size='3' value='";
+  HtmlSrc += OneTurnLimitSec;
+  HtmlSrc +="'> seconds per one turn <span style='color:red;'>";
+  HtmlSrc += oneturnlimitsecERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='left' style='width: 300px;'>Allowed range [20-600sec]<br>Lower speed limit activating the watchdog<br>Use a number 50% higher than the actual speed of your rotator</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr><td class='tdr'><label for='acmotor'>Motor supply:</label></td><td><select name='motor' id='motor'><option value='0'";
+  HtmlSrc += motorSELECT0;
+  HtmlSrc +=">DC</option><option value='1'";
+  HtmlSrc += motorSELECT1;
+  HtmlSrc +=">AC</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>DC with optional PWM<br>AC activates another relay sequence</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr><td class='tdr'><label for='pwmenable'><span";
+  HtmlSrc += pwmenableSTYLE;
+  HtmlSrc += ">DC PWM control:</label></td><td><select name='pwmenable' id='pwmenable' ";
+  HtmlSrc += pwmenableDisable;
+  HtmlSrc +="><option value='0'";
+  HtmlSrc += pwmSELECT0;
+  HtmlSrc +=">OFF</option><option value='1'";
+  HtmlSrc += pwmSELECT1;
+  HtmlSrc +=">ON</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>If disable, mosfet must be bridged,<br>or replace by jumper<br>More in Wiki page</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='baud'>USB serial BAUDRATE:</label></td><td><select name='baud' id='baud'><option value='0'";
+  HtmlSrc += baudSELECT0;
+  HtmlSrc +=">1200</option><option value='1'";
+  HtmlSrc += baudSELECT1;
+  HtmlSrc +=">2400</option><option value='2'";
+  HtmlSrc += baudSELECT2;
+  HtmlSrc +=">4800</option><option value='3'";
+  HtmlSrc += baudSELECT3;
+  HtmlSrc +=">9600</option><option value='4'";
+  HtmlSrc += baudSELECT4;
+  HtmlSrc +=">115200</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Use for GS-232 protocol<br>Must restart after change</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='mqttip0'>MQTT broker IP:</label></td><td>";
+  HtmlSrc +="<input type='text' id='mqttip0' name='mqttip0' size='1' value='" + String(mqtt_server_ip[0]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip1' name='mqttip1' size='1' value='" + String(mqtt_server_ip[1]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip2' name='mqttip2' size='1' value='" + String(mqtt_server_ip[2]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip3' name='mqttip3' size='1' value='" + String(mqtt_server_ip[3]) + "'>";
+  HtmlSrc +="<span style='color:red;'>";
+  HtmlSrc += mqttERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Default public broker 54.38.157.134<br>If the first digit is zero, MQTT is disabled</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr><td class='tdr'><label for='mqttport'>MQTT broker PORT:</label></td><td>";
+  HtmlSrc +="<input type='text' id='mqttport' name='mqttport' size='2' value='" + String(MQTT_PORT) + "'>\n";
+  HtmlSrc +="<span style='color:red;'>";
+  HtmlSrc += mqttportERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Default public broker port 1883</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'></td><td><button id='go'>&#10004; Change</button></form>&nbsp; ";
+  HtmlSrc +="<a href='/cal' onclick=\"window.open( this.href, this.href, 'width=700,height=1150,left=0,top=0,menubar=no,location=no,status=no' ); return false;\"><button id='go'>Calibrate &#8618;</button></a>";
+  HtmlSrc +="</td></tr>\n";
+
+  // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>\n";
+  // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>";
+  // HtmlSrc +="<tr><td class='tdr'><a href='/'><button id='go'>&#8617; Back to Control</button></a></td><td class='tdl'><a href='/cal' onclick=\"window.open( this.href, this.href, 'width=700,height=715,left=0,top=0,menubar=no,location=no,status=no' ); return false;\"><button id='go'>Calibrate &#8618;</button></a></td></tr>";
+  HtmlSrc +="<tr><td class='tdr'></td><td class='tdl'><span style='color: #666;'>After change, refresh all other page for apply changes.</span><br><a href='https://remoteqth.com/w/doku.php?id=simple_rotator_interface_v' target='_blank'>More on Wiki &#10138;</a></td></tr>\n";
+  HtmlSrc +="</body></html>\n";
+
+  ajaxserver.send(200, "text/html", HtmlSrc); //Send web page
+}
+
+void handleCal() {
+
+  if ( ajaxserver.hasArg("stop")==1 ){
+    if(Status<0){
+      Status=-3;
+    }else if(Status>0){
+      Status=3;
+    }
+  }
+
+  if ( ajaxserver.hasArg("cw")==1 ){
+    Status=1; //digitalWrite(BrakePin, HIGH); delay(24);
+    // RunTimer();
+  }
+
+  if ( ajaxserver.hasArg("ccw")==1 ){
+    Status=-1; //digitalWrite(BrakePin, HIGH); delay(24);
+    // RunTimer();
+  }
+
+  if ( ajaxserver.hasArg("reverse")==1 ){
+    Reverse = !Reverse;
+    EEPROM.writeBool(35, Reverse);
+    EEPROM.commit();
+    MqttPubString("ReverseControl", String(Reverse), true);
+  }
+
+  if ( ajaxserver.hasArg("reverseaz")==1 ){
+    ReverseAZ = !ReverseAZ;
+    EEPROM.writeBool(230, ReverseAZ);
+    EEPROM.commit();
+    MqttPubString("ReverseAzimuth", String(ReverseAZ), true);
+  }
+
+  if ( ajaxserver.hasArg("clear")==1 ){
+    CcwRaw=142;
+    CwRaw = 3155;
+    EEPROM.writeUShort(31, CcwRaw);
+    EEPROM.writeUShort(33, CwRaw);
+    EEPROM.commit();
+    MqttPubString("CcwRaw", String(CcwRaw), true);
+    MqttPubString("CwRaw", String(CwRaw), true);
+  }
+
+  long RawTmp = 0;
+
+  // 31-32 CcwRaw
+  if ( ajaxserver.hasArg("setccw")==1 ){
+    // RawTmp = 0;
+    // for (int i=0; i<10; i++){
+    //   RawTmp = RawTmp + readADC_Cal(analogRead(AzimuthPin));
+    //   delay(10);
+    // }
+    // CcwRaw = RawTmp / 10;
+    CcwRaw = AzimuthValue;
+    EEPROM.writeUShort(31, CcwRaw);
+    EEPROM.commit();
+    MqttPubString("CcwRaw", String(CcwRaw), true);
+  }
+
+  // 33-34  CwRaw
+  if ( ajaxserver.hasArg("setcw")==1 ){
+    // RawTmp = 0;
+    // for (int i=0; i<10; i++){
+    //   RawTmp = RawTmp + readADC_Cal(analogRead(AzimuthPin));
+    //   delay(10);
+    // }
+    // CwRaw = RawTmp / 10;
+    CwRaw = AzimuthValue;
+    EEPROM.writeUShort(33, CwRaw);
+    EEPROM.commit();
+    MqttPubString("CwRaw", String(CwRaw), true);
+  }
+
+    // MqttPubString("Debug setcw", String(ajaxserver.arg("setcw")), false);
+    // MqttPubString("Debug setcw 2", String(ajaxserver.hasArg("setcw")), false);
+
+  String ReverseCOLOR= "";
+  String ReverseSTATUS= "";
+  if(Reverse==true){
+    // ReverseCOLOR= " style='background-color: #c00; color: #FFF;'";
+    ReverseCOLOR= " class='red'";
+    ReverseSTATUS= "ON";
+  }else{
+    ReverseCOLOR= "";
+    ReverseSTATUS= "OFF";
+  }
+
+  String ReverseAzCOLOR= "";
+  String ReverseAzSTATUS= "";
+  if(ReverseAZ==true){
+    // ReverseCOLOR= " style='background-color: #c00; color: #FFF;'";
+    ReverseAzCOLOR= " class='red'";
+    ReverseAzSTATUS= "ON";
+  }else{
+    ReverseAzCOLOR= "";
+    ReverseAzSTATUS= "OFF";
+  }
+
+  String HtmlSrc = "<!DOCTYPE html><html><head><title>CALIBRATE</title>";
+  HtmlSrc +="<meta http-equiv='Content-Type' content='text/html; charset=UTF-8'>";
+  HtmlSrc +="<style type='text/css'>button {background-color: #ccc; padding: 5px 20px 5px 20px; border: none; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;} button:hover {background-color: orange;} ";
+  HtmlSrc +=".red {background-color: #c00; color: #FFF;} table, th, td { color: #fff; border: 0px; border-color: #666; border-style: solid; margin: 0px;}";
+  HtmlSrc +=".tdl { text-align: left; padding: 10px;}";
+  HtmlSrc +=".tdc { text-align: center; padding: 10px;}";
+  HtmlSrc +=".tdr { text-align: right; padding: 10px;}";
+  HtmlSrc +="html,body { background-color: #333; text-color: #ccc; font-family: 'Roboto Condensed',sans-serif,Arial,Tahoma,Verdana;}";
+  HtmlSrc +="a:hover {color: #fff;}";
+  HtmlSrc +="a {color: #ccc; text-decoration: underline;}";
+  HtmlSrc +="</style><link href='http://fonts.googleapis.com/css?family=Roboto+Condensed:300italic,400italic,700italic,400,700,300&subset=latin-ext' rel='stylesheet' type='text/css'></head><body>";
+  HtmlSrc +="<H1 style='color: #666; text-align: center;'>Calibration steps:<br><span style='font-size: 50%;'>(MAC ";
+  HtmlSrc +=MACString;
+  HtmlSrc +="|FW ";
+  HtmlSrc +=REV;
+  HtmlSrc +="|HW ";
+  HtmlSrc +=String(HardwareRev);
+  // HtmlSrc +="|";
+  // HtmlSrc +=String(HWidValue);
+  HtmlSrc +=")</span></H1><div style='display: flex; justify-content: center;'>";
+  HtmlSrc +="<table cellspacing='0' cellpadding='0'><form action='/cal' method='post' style='color: #ccc; margin: 50 0 0 0; text-align: center;'>";
+  HtmlSrc +="<tr><td class='tdc' colspan='3' style='background-color: #666; border-top-left-radius: 20px; border-top-right-radius: 20px;'><span style='font-size: 200%;'>1. Rotate direction calibrate</span></td></tr>";
+  HtmlSrc +="<tr style='background-color: #666;'>";
+  HtmlSrc +="<td class='tdr'><button id='ccw' name='ccw'>&#8630; CCW</button></td>";
+  HtmlSrc +="<td class='tdc'><button id='stop' name='stop'>&#10008; STOP</button></td>";
+  HtmlSrc +="<td class='tdl'><button id='cw' name='cw'>CW &#8631;</button></td>";
+  HtmlSrc +="</tr><tr>";
+  HtmlSrc +="<td class='tdc' colspan='3' style='background-color: #666;'><button id='reverse' name='reverse'";
+  HtmlSrc +=ReverseCOLOR;
+  HtmlSrc +=">REVERSE-CONTROL-<strong>";
+  HtmlSrc +=ReverseSTATUS;
+  HtmlSrc +="</strong></button></td>";
+  HtmlSrc +="</tr><tr>";
+  HtmlSrc +="<td class='tdc' colspan='3' style='color: #333; background-color: #666; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;'><span style='color: #ccc;'>Instruction:</span> if it does not rotate according to the buttons, reverse the control</td>";
+  HtmlSrc +="</tr><tr>";
+  HtmlSrc +="<td class='tdc' colspan='3' style='height:30px'></td></tr>";
+
+  HtmlSrc +="<tr><td class='tdc' colspan='3' style='background-color: #666; border-top-left-radius: 20px; border-top-right-radius: 20px;'><span style='font-size: 200%;'>2. Azimuth calibrate</span></td>";
+  HtmlSrc +="</tr><tr>";
+  HtmlSrc +="<td class='tdc' colspan='3' style='background-color: #666;'><div style='position: relative;'><canvas class='top' id='Azimuth' width='600' height='140'>Your browser does not support the HTML5 canvas tag.</canvas></div></td>";
+  HtmlSrc +="</tr><tr style='background-color: #666;'>";
+  HtmlSrc +="<td class='tdl'><button id='setccw' name='setccw'>&#8676; SAVE CCW</button></td>";
+  HtmlSrc +="<td class='tdc' style='background-color: #666;'><button id='clear' name='clear'>";
+  HtmlSrc +="RESET CW/CCW SAVE</button></td>";
+  HtmlSrc +="<td class='tdr'><button id='setcw' name='setcw'>SAVE CW &#8677;</button></td>";
+  HtmlSrc +="</tr><tr>";
+  HtmlSrc +="<td class='tdc' colspan='3' style='background-color: #666;'><button id='reverseaz' name='reverseaz'";
+  HtmlSrc +=ReverseAzCOLOR;
+  HtmlSrc +=">REVERSE-AZIMUTH-<strong>";
+  HtmlSrc +=ReverseAzSTATUS;
+  HtmlSrc +="</strong></button></td>";
+  HtmlSrc +="</tr><tr>";
+  HtmlSrc +="<td class='tdc' colspan='3' style='color: #333; background-color: #666; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;'>";
+  if( AZsource == false && AZtwoWire == true && CwRaw < 1577 ){
+    HtmlSrc +="<span style='color: #ccc;'>Recommendation: </span><span style='color: #0c0;'>If you are using a 2 wire potentiometer less than 500Ω,<br>you can increase the sensitivity if you short the J16 jumper on the back side PCB.<br><br></span>";
+  }
+  HtmlSrc +="<span style='color: #ccc;'>Instruction:</span><br>&#8226; If azimuth potentiometer move opposite direction (CCW left and CW right),<br>activate REVERSE-AZIMUTH button<br>&#8226; Rotate to both CCW ";
+  HtmlSrc +=StartAzimuth;
+  HtmlSrc +="&deg; and CW ";
+  HtmlSrc +=StartAzimuth+MaxRotateDegree;
+  HtmlSrc +="&deg; ends and save new limits<br>&#8226; After calibrate rotate to full CCW limits, then measure real azimuth<br>and put this value to &ldquo;Start CCW azimuth:&rdquo;	field in Setup page</td>";
+  HtmlSrc +="</tr><tr>";
+  HtmlSrc +="<td class='tdc' colspan='3' style='height:30px'></td></tr>";
+
+  HtmlSrc +="<tr><td class='tdc' colspan='3' style='background-color: #666; border-top-left-radius: 20px; border-top-right-radius: 20px;'><span style='font-size: 200%;'>3. Front panel calibrate (optional)</span></td>";
+  HtmlSrc +="</tr><tr>";
+  HtmlSrc +="<td class='tdc' colspan='3' style='color: #333; background-color: #666; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;'>";
+  HtmlSrc +="<span style='font-size: 150%;'>Panel value <span style='font-weight: bold; color: #0a0;' id='frontAZValue'>0</span><br></span>";
+  HtmlSrc +="<span style='color: #ccc;'><br>Instruction:</span><br>&#8226; Rotate front panel potentiometer axis without knob to value 0&deg <br>&#8226; Put knob with orientation to north on axis<br>&#8226; Fixate knob to axis on position north</td></tr>";
+
+  HtmlSrc +="</table></div><div style='display: flex; justify-content: center;'><span><p style='text-align: center;'><a href='https://remoteqth.com/w/doku.php?id=simple_rotator_interface_v' target='_blank'>More on Wiki &#10138;</a></p></span></div>";
+
+  String s = CAL_page; //Read HTML contents
+  HtmlSrc +=s;
+  ajaxserver.send(200, "text/html", HtmlSrc); //Send web page
+}
+
+void handlePostStop() {
+  if(Status<0){
+    Status=-3;
+  }else if(Status>0){
+    Status=3;
+  }
+}
+void handleRoot() {
+ String s = MAIN_page; //Read HTML contents
+ ajaxserver.send(200, "text/html", s); //Send web page
+}
+void handleADC() {
+ ajaxserver.send(200, "text/plane", String(VoltageValue)); //Send ADC value only to client ajax request
+}
+void handleAZ() {
+  ajaxserver.send(200, "text/plane", String(Azimuth) );
+}
+void handleFrontAZ() {
+  if(AZmasterValue==142){
+    ajaxserver.send(200, "text/plane", "off" );
+  }else{
+    ajaxserver.send(200, "text/plane", String(AZmaster)+"&deg;" );
+  }
+}
+void handleAZadc() {
+  ajaxserver.send(200, "text/plane", String(AzimuthValue) );
+}
+void handleStat() {
+  ajaxserver.send(200, "text/plane", String(Status+4) );
+}
+void handleStart() {
+  ajaxserver.send(200, "text/plane", String(StartAzimuth) );
+}
+void handleMax() {
+  ajaxserver.send(200, "text/plane", String(MaxRotateDegree) );
+}
+void handleAnt() {
+  ajaxserver.send(200, "text/plane", String(AntRadiationAngle) );
+}
+void handleAntName() {
+  ajaxserver.send(200, "text/plane", RotName );
+}
+void handleMapUrl() {
+  ajaxserver.send(200, "text/plane", MapUrl );
+}
+void handleEndstop() {
+  ajaxserver.send(200, "text/plane", String(Endstop) );
+}
+void handleEndstopLowZone() {
+  ajaxserver.send(200, "text/plane", String(NoEndstopLowZone) );
+}
+void handleEndstopHighZone() {
+  ajaxserver.send(200, "text/plane", String(NoEndstopHighZone) );
+}
+void handleCwraw() {
+  ajaxserver.send(200, "text/plane", String(CwRaw) );
+}
+void handleCcwraw() {
+  ajaxserver.send(200, "text/plane", String(CcwRaw) );
+}
+void handleMAC() {
+  ajaxserver.send(200, "text/plane", String(MACString) );
+}
+void handleUptime() {
+  ajaxserver.send(200, "text/plane", String(millis()/1000) );
+}
+
+#endif //#if defined(AJAX)
