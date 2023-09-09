@@ -19,12 +19,12 @@
         RED      - neodym magnets
         GREEN    - bearings
 //------------------------------------------------------------------- */
-        Part             = -1;    // select part 1-16, -x=all, 17=variant of inner
+        Part             = -8;    // select part 1-18, -x=all, 17=variant of inner
                                    // ./render.sh bash script generate all parts
         BearingInTuning  = +20;    // +- smooth tuning bearing inner diameter in um
         MountDia         =  42;    // mm tube size for mounting
         MountDiaFn       = 100;    // mount tube polygon, 4 for square
-        CUT              =   1;    // 0/1 hlaf cut view enable
+        CUT              =   0;    // 0/1 hlaf cut view enable
         Strong           =   0;    // 1 enable strongest (part 6 only)
 //-------------------------------------------------------------------
 
@@ -171,6 +171,15 @@ module CrosSupport(){
             translate([0,-6,177]) cylinder(h=40.01, d1=50, d2=36, center=false, $fn=200);
         }
 }
+
+    // formatting bearing// 18
+    if(Part==18){
+        difference(){
+            cylinder(h=10, d1=15.2, d2=14.8, center=false, $fn=300);
+            translate([0,0,-1]) cylinder(h=12, d=3.8, center=false, $fn=30);
+            translate([0,0,8]) cylinder(h=4, r=7/sin(60)/2, center=false, $fn=6);
+        }
+    }
 
     // water measure support    // 12
     if(Part==12){
