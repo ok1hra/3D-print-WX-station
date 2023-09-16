@@ -34,6 +34,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20230916 - fix key login
 20230825 - add dew point, fix shift register, fix MQTT topic
 20230815 - recalibrate rain
 20221104 - calibrate rain
@@ -98,7 +99,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20230830";
+const char* REV = "20230916";
 #define HWREVsw 8                   // software PCB version [7-8]
 #define AJAX                        // enable ajax web server
 #define OTAWEB                      // enable upload firmware via web
@@ -3965,7 +3966,8 @@ void TelnetAuth(){
 
 void AuthQ(int NR, bool BAD){
   Prn(1, 0,"What character is at ");
-  RandomNumber=random(0, strlen(key));
+  // RandomNumber=random(0, strlen(key));
+  RandomNumber=random(0, 99);
   Prn(1, 0, String(RandomNumber+1) );
   Prn(1, 0," position, in key? (");
   Prn(1, 0,String(NR));
