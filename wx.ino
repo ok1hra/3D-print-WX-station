@@ -34,7 +34,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
-20230916 - fix key login
+20230916 - fix key login, http temperature
 20230825 - add dew point, fix shift register, fix MQTT topic
 20230815 - recalibrate rain
 20221104 - calibrate rain
@@ -101,7 +101,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 //-------------------------------------------------------------------------------------------------------
 const char* REV = "20230916";
 #define HWREVsw 8                   // software PCB version [7-8]
-#define AJAX                        // enable ajax web server
+// #define AJAX                        // enable ajax web server
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
@@ -3540,18 +3540,20 @@ void http2(){
           webClient2.print(F("<!doctype html><html><head><title>"));
           webClient2.print(YOUR_CALL);
           webClient2.print(F(" WX</title><meta http-equiv=\"refresh\" content=\"1800\"><meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\"><style type=\"text/css\">body {font-family: 'Roboto Condensed',sans-serif,Arial,Tahoma,Verdana; background: #444;}</style><link href='http://fonts.googleapis.com/css?family=Roboto+Condensed:300italic,400italic,700italic,400,700,300&subset=latin-ext' rel='stylesheet' type='text/css'></head><body><p style=\"color: #ccc; margin: 0 0 0 0; text-align: center;\"><span style=\"color: #999; font-size: 800%;\">"));
-          // if(ExtTemp==true){
-          //   sensors.requestTemperatures();
-          //   int temperatureC = sensors.getTempCByIndex(0);
-          //   // dtostrf(temperatureC, 1, 0, buf);  //1 is mininum width, 0 is precision
-          //   webClient2.print(String(temperatureC));
-          // }else{
-          //   int temperatureC = htu.readTemperature();
-          //   webClient2.print(String(temperatureC));
-          //   Serial.println(temperatureC);
-          // }
-
-          webClient2.print(String(bmp.readTemperature()+TempCal));
+          #if defined(HTU21D)
+            if(HTU21Denable==true){
+              if(ExtTemp==false){
+                webClient2.print(String(htu.readTemperature()+TempCal));
+              }
+            }
+          #endif
+          #if defined(DS18B20)
+            if(ExtTemp==true){
+              sensors.requestTemperatures();
+              float temperatureC = sensors.getTempC(insideThermometer);
+              webClient2.print(String(temperatureC+TempCal));
+            }
+          #endif
           webClient2.println(F("&deg;</span><br><span style=\"color: #000; background: #080; padding: 4px 6px 4px 6px; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;\">"));
           #if defined(HTU21D)
             if(HTU21Denable==true){
