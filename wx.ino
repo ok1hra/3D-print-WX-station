@@ -1350,6 +1350,7 @@ void Watchdog(){
     AprsWxIgate();
     GetHttpsWindy();
 
+    WindSpeedMaxPeriodUTC="";
     MeasureTimer[0]=millis();
     Interrupts(true);
     // digitalWrite(EnablePin,0);
@@ -1472,7 +1473,7 @@ void GetValue(){
   RpmAverage[0]=1;
   RpmAverage[1]=0;
   PeriodMinRpmPulse=987654321;
-  WindSpeedMaxPeriodUTC="";
+  // WindSpeedMaxPeriodUTC="";
 
 }
 //-------------------------------------------------------------------------------------------------------
@@ -1781,7 +1782,7 @@ void AprsWxIgate() {
       +"g"+LeadingZero(3,WindSpeedMaxPeriodMPS/0.447)
       +"t"+LeadingZero(3,(TemperatureCelsius)*1.8+32)
       +"h"+LeadingZero(3,constrain(HumidityRelPercent, 0, 100))
-      +"b"+LeadingZero(6,PressureHPA)
+      +"b"+LeadingZero(6,PressureHPA*100)
       +"P"+LeadingZero(3,RainTodayMM/0.254) );
     }
 
@@ -1792,10 +1793,13 @@ void AprsWxIgate() {
     +"g"+LeadingZero(3,WindSpeedMaxPeriodMPS/0.447)
     +"t"+LeadingZero(3,(TemperatureCelsius)*1.8+32)
     +"h"+LeadingZero(3,constrain(HumidityRelPercent, 0, 100))
-    +"b"+LeadingZero(6,PressureHPA)
+    +"b"+LeadingZero(6,PressureHPA*100)
     +"P"+LeadingZero(3,RainTodayMM/0.254) );
 
     if(EnableSerialDebug>0){
+      // APRS-TX | user OK1HRA-8 pass ***** vers esp32wx 20230916 filter m/1
+      // APRS-TX | OK1HRA-8>APRSWX,TCPIP*,qAS,:=5001.99N/01350.16E_270/009g017t066h057b100307P000
+      // APRS-TX | OK1HRA-8>APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station
       Prn(3, 1,"APRS-TX | "+YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
     }
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
