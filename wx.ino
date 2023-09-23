@@ -1375,7 +1375,7 @@ void GetValue(){
   RainCount = 0;
   RainTodayMM = 0;
   WindSpeedAvgMPS = 0;
-  WindSpeedMaxPeriodMPS = 0;
+  // WindSpeedMaxPeriodMPS = 0;
   PressureHPA = 0;
   TemperatureCelsius = 0;
   HumidityRelPercent = 0;
@@ -1428,37 +1428,36 @@ void GetValue(){
   TemperatureCelsius = TemperatureCelsius + TempCal;
 
   if(EnableSerialDebug>0){
-    Prn(3, 1,"-- GET VALUE --");
-    Prn(3, 0, "WindDir ");
+    Prn(3, 0, "GET WindDir ");
       Prn(3, 1, String(WindDir));
-    Prn(3, 0, "RainCount ");
+    Prn(3, 0, "GET RainCount ");
       Prn(3, 1, String(RainCount)+" (day "+String(UtcTime(2))+")");
-    Prn(3, 0, "RainTodayMM ");
+    Prn(3, 0, "GET RainTodayMM ");
       Prn(3, 1, String(RainTodayMM));
-    Prn(3, 0, "WindSpeedAvgMPS ");
+    Prn(3, 0, "GET WindSpeedAvgMPS ");
       Prn(3, 1, String(WindSpeedAvgMPS));
-    Prn(3, 0, "WindSpeedMaxPeriodMPS ");
+    Prn(3, 0, "GET WindSpeedMaxPeriodMPS ");
       Prn(3, 1, String(WindSpeedMaxPeriodMPS));
-    Prn(3, 0, "WindSpeedMaxPeriodUTC ");
+    Prn(3, 0, "GET WindSpeedMaxPeriodUTC ");
       Prn(3, 1, WindSpeedMaxPeriodUTC);
-    Prn(3, 0, "PressureHPaBMP280 ");
+    Prn(3, 0, "GET PressureHPaBMP280 ");
       Prn(3, 1, String(PressureHPaBMP280));
-    Prn(3, 0, "TemperatureCelsiusBMP280 ");
+    Prn(3, 0, "GET TemperatureCelsiusBMP280 ");
       Prn(3, 1, String(TemperatureCelsiusBMP280));
-    Prn(3, 0, "HumidityRelPercentHTU21D ");
+    Prn(3, 0, "GET HumidityRelPercentHTU21D ");
       Prn(3, 1, String(HumidityRelPercentHTU21D));
-    Prn(3, 0, "DewPointCelsiusHTU21D ");
+    Prn(3, 0, "GET DewPointCelsiusHTU21D ");
       Prn(3, 1, String(DewPointCelsiusHTU21D));
-    Prn(3, 0, "TemperatureCelsiusDS18B20 ");
+    Prn(3, 0, "GET TemperatureCelsiusDS18B20 ");
       Prn(3, 1, String(TemperatureCelsiusDS18B20));
 
-    Prn(3, 0, "PressureHPA ");
+    Prn(3, 0, "GET PressureHPA ");
       Prn(3, 1, String(PressureHPA));
-    Prn(3, 0, "TemperatureCelsius ");
+    Prn(3, 0, "GET TemperatureCelsius ");
       Prn(3, 1, String(TemperatureCelsius));
-    Prn(3, 0, "HumidityRelPercent ");
+    Prn(3, 0, "GET HumidityRelPercent ");
       Prn(3, 1, String(HumidityRelPercent));
-    Prn(3, 0, "DewPointCelsius ");
+    Prn(3, 0, "GET DewPointCelsius ");
       Prn(3, 1, String(DewPointCelsius));
   }
 
@@ -1488,12 +1487,12 @@ void MqttPubValue(){
   MqttPubString("RainToday-mm", String(RainTodayMM), false);
 
   MqttPubString("WindSpeedAvg-mps", String(WindSpeedAvgMPS), false);
-  if(PeriodMinRpmPulse<987654321){
+  // if(PeriodMinRpmPulse<987654321){
     MqttPubString("WindSpeedMaxPeriod-mps", String(WindSpeedMaxPeriodMPS), false);
     MqttPubString("WindSpeedMaxPeriod-utc", String(WindSpeedMaxPeriodUTC), false);
-  }else{
-    MqttPubString("WindSpeedMaxPeriod-mps", "0", false);
-  }
+  // }else{
+  //   MqttPubString("WindSpeedMaxPeriod-mps", "0", false);
+  // }
 
   #if defined(BMP280)
     if(BMP280enable==true){
@@ -1791,7 +1790,7 @@ void AprsWxIgate() {
     +LeadingZero(3,WindDir)
     +"/"+LeadingZero(3,WindSpeedAvgMPS/0.447)
     +"g"+LeadingZero(3,WindSpeedMaxPeriodMPS/0.447)
-    +"t"+TemperatureCelsius*1.8+32
+    +"t"+LeadingZero(3,(TemperatureCelsius)*1.8+32)
     +"h"+LeadingZero(3,constrain(HumidityRelPercent, 0, 100))
     +"b"+LeadingZero(6,PressureHPA)
     +"P"+LeadingZero(3,RainTodayMM/0.254) );
