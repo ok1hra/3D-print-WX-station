@@ -34,6 +34,7 @@ Remote USB access
 HARDWARE ESP32-POE
 
 Changelog:
+20231012 - mDNS support
 20230917 - windy.com (not work, probably low memory)
 20230916 - fix key login, http temperature
 20230825 - add dew point, fix shift register, fix MQTT topic
@@ -100,10 +101,11 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20230923";
+const char* REV = "20231012";
 #define HWREVsw 8                   // software PCB version [7-8]
 // #define AJAX                        // enable ajax web server
 // #define WINDY                      // upload to windy.com (not work, probably low memory)
+// #define M_DNS                        // not work, but ArduinoOTA.setHostname() rewrite hostname
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
@@ -218,6 +220,10 @@ int incomingByte = 0;   // for incoming serial data
 
 int i = 0;
 #include <WiFi.h>
+// mDNS
+#if defined(M_DNS) && defined(ETHERNET)
+  #include <ESPmDNS.h>
+#endif
 #include <WiFiUdp.h>
 #include "EEPROM.h"
 #define EEPROM_SIZE 368   /* up to 512
@@ -748,7 +754,7 @@ void setup() {
   if(EEPROM.readByte(2)!=255){
     TempCal = (float)EEPROM.readShort(2)/100.0;
   }else{
-    TempCal = -2.50;
+    TempCal = 0;
   }
 
   // 4 HWREVpcb UChar
@@ -914,6 +920,22 @@ void setup() {
       ETH.config(IPAddress(192, 168, 1, 188), IPAddress(192, 168, 1, 255),IPAddress(255, 255, 255, 0),IPAddress(8, 8, 8, 8));
       //config(IPAddress local_ip, IPAddress gateway, IPAddress subnet, IPAddress dns1 = (uint32_t)0x00000000, IPAddress dns2 = (uint32_t)0x00000000);
     }
+    // mDNS
+    #if defined(M_DNS)
+        // Set up mDNS responder:
+        // - first argument is the domain name, in this example
+        //   the fully-qualified domain name is "esp32.local"
+        // - second argument is the IP address to advertise
+        //   we send our IP address on the WiFi network
+      if (MDNS.begin("wx")) {
+        Serial.println("mDNS server run");
+        MDNS.addService("http", "tcp", 80);
+        MDNS.addService("http", "tcp", 88);
+      } else {
+        Serial.println("Error start mDNS server");
+      }
+    #endif
+
   #endif
     server1.begin();
     server2.begin();
@@ -972,6 +994,7 @@ void setup() {
 
     ArduinoOTA.begin();
   #endif
+
   #if defined(OTAWEB)
     OTAserver.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send(200, "text/plain", "PSE QSY to /update");
@@ -2853,7 +2876,7 @@ void ListCommands(int OUT){
       if(AprsON==true){
         Prn(OUT, 1,"CALLSIGN with ssid 6-4 | "+YOUR_CALL);
       }else{
-        Prn(OUT, 1,"location | "+YOUR_CALL);
+        Prn(OUT, 1,"location name | "+YOUR_CALL);
       }
 
     Prn(OUT, 1,"");
