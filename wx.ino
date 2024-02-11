@@ -101,7 +101,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20231012";
+const char* REV = "20240211";
 #define HWREVsw 8                   // software PCB version [7-8]
 // #define AJAX                        // enable ajax web server
 // #define WINDY                      // upload to windy.com (not work, probably low memory)
@@ -1396,7 +1396,7 @@ void GetValue(){
   }
 
   WindDir = 0;
-  RainCount = 0;
+  // RainCount = 0;
   RainTodayMM = 0;
   WindSpeedAvgMPS = 0;
   // WindSpeedMaxPeriodMPS = 0;
@@ -2757,13 +2757,14 @@ void ListCommands(int OUT){
       int intBuf = analogRead(RainPin);
       Prn(OUT, 0,"  RainPin raw "+String(analogRead(intBuf)));
       if(intBuf<1000){
-        Prn(OUT, 0," > false");
+        Prn(OUT, 0," > false|");
       }else if(intBuf>=1000 && intBuf<=2000){
-        Prn(OUT, 0," > true");
+        Prn(OUT, 0," > true|");
       }else if(intBuf>2000){
-        Prn(OUT, 0," > malformed");
+        Prn(OUT, 1," > MAGNET not detected - check north orientation or position");
+        Prn(OUT, 0,"  ");
       }
-      Prn(OUT, 1,"|"+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+"|"+String(RainPulseToMM(RainCount))+"mm|"+String(mmInPulse)+" rain mm per pulse" );
+      Prn(OUT, 1,RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+"|"+String(RainPulseToMM(RainCount))+"mm|"+String(mmInPulse)+" rain mm per pulse" );
     #endif
 
     #if HWREVsw==7
@@ -2774,9 +2775,10 @@ void ListCommands(int OUT){
       // Prn(OUT, 0," | ButtonPin ");
       //   Prn(OUT, 1, String(digitalRead(ButtonPin)));
       if(digitalRead(Rain1Pin)==digitalRead(Rain2Pin)){
-        Prn(OUT, 1,"|sensor malformed!" );
+        Prn(OUT, 1," > MAGNET not detected - check north orientation or position");
+        Prn(OUT, 0,"  ");
       }else{
-        Prn(OUT, 1,"|"+RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+"|"+String(RainPulseToMM(RainCount))+"mm|"+String(mmInPulse)+" rain mm per pulse" );
+        Prn(OUT, 1,RainCountDayOfMonth+"th day Rain counter "+String(RainCount)+"|"+String(RainPulseToMM(RainCount))+"mm|"+String(mmInPulse)+" rain mm per pulse" );
       }
     #endif
     // if(EnableSerialDebug>0){
@@ -2785,11 +2787,10 @@ void ListCommands(int OUT){
     Azimuth();
     Prn(3, 0,"  Wind direction ");
     Prn(3, 0,String(Azimuth(),BIN));
-    if(WindDir==-1){
-      Prn(OUT, 1,"|sensor malformed!" );
-    }else{
-      Prn(OUT, 1, "|"+String(WindDir)+"° [with shift "+String(WindDirShift)+"°]");
+    if(Azimuth()==0x00){
+      Prn(OUT, 1,"|MAGNET not detected - check north orientation" );
     }
+    Prn(OUT, 1, "|"+String(WindDir)+"° [with shift "+String(WindDirShift)+"°]");
     Prn(OUT, 0,"  RpmPin ");
       Prn(OUT, 0,String(digitalRead(RpmPin)));
     Prn(OUT, 1, "|Wind speed last   "+String(RpmPulse)+" ms|"+String(PulseToMetterBySecond(RpmPulse))+" m/s|"+String(PulseToMetterBySecond(RpmPulse)*3.6)+" km/h");
@@ -3641,7 +3642,7 @@ void http1(){
           webClient.println(F("                      <code id=\"status-state\" class=\"connecting\"><em>&bull;</em> <span>connecting...</span></code> to "));
           webClient.println(F("                      <code id=\"status-host\">?</code>"));
           webClient.println(F("                      <em>via</em> MQTT Wall 0.3.0 (<a href=\"https://github.com/bastlirna/mqtt-wall\">github</a>)"));
-          webClient.println(F("                      | <a href=\"https://remoteqth.com/wiki/\" target=\"_blank\">WX Wiki</a>."));
+          webClient.println(F("                      | <a href=\"https://remoteqth.com/w/doku.php?id=3d_print_aprs_wx_station\" target=\"_blank\">WX Wiki</a>."));
           webClient.println(F("                  </p>"));
           webClient.println(F("              </div>"));
           webClient.println(F("          </div>"));
