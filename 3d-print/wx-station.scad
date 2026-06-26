@@ -19,11 +19,11 @@
         RED      - neodym magnets
         GREEN    - bearings
 //------------------------------------------------------------------- */
-        Part             = -8;    // select part 1-18, -x=all, 17=variant of inner
+        Part             = 2;    // select part 1-18, -x=all, 17=variant of inner
                                    // ./render.sh bash script generate all parts
         BearingInTuning  = +20;    // +- smooth tuning bearing inner diameter in um
-        MountDia         =  42;    // mm tube size for mounting
-        MountDiaFn       = 100;    // mount tube polygon, 4 for square
+        MountDia         =  42;     //30.2/cos(45);    // mm tube size for mounting
+        MountDiaFn       = 120;    // mount tube polygon, 4 for square
         CUT              =   0;    // 0/1 hlaf cut view enable
         Strong           =   0;    // 1 enable strongest (part 6 only)
 //-------------------------------------------------------------------
@@ -538,7 +538,7 @@ module EyeBase1(){
             translate([0,0,76]) scale([1,0.93,1]) cylinder(h=15, d1=45, d2=55, $fn=50);
 
             // mounting vertical/horizontal
-            translate([0,-21-MountDia/2,-6]) rotate([0,0,0]) cylinder(d=MountDia, h=70+50, $fn=MountDiaFn, center=false);  
+            translate([0,-21-MountDia/2,-6]) rotate([0,0,45]) cylinder(d=MountDia, h=70+50, $fn=MountDiaFn, center=false);  
             translate([0,-21-MountDia/2,30]) rotate([0,90,0]) cylinder(d=MountDia, h=MountDia*3, $fn=MountDiaFn, center=true);  
             // binder
             translate([0,-21-MountDia/2,60]) Binder(MountDia);

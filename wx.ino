@@ -31,9 +31,15 @@ Send test packet
 Remote USB access
   screen /dev/ttyUSB0 115200
 
+
+mosquitto_sub -h 54.38.157.134 -p 1883 -t "OK1HRA-8/WX/FreeHeap"
+
+
+
 HARDWARE ESP32-POE
 
 Changelog:
+20260626 - AI bugfix
 20231012 - mDNS support
 20230917 - windy.com (not work, probably low memory)
 20230916 - fix key login, http temperature
@@ -101,7 +107,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20240211";
+const char* REV = "20260626";
 #define HWREVsw 8                   // software PCB version [7-8]
 // #define AJAX                        // enable ajax web server
 // #define WINDY                      // upload to windy.com (not work, probably low memory)
@@ -181,8 +187,9 @@ String WindSpeedMaxPeriodUTC;
 long MinRpmPulse;
 String MinRpmPulseTimestamp;
 // unsigned int RpmSpeed = 0;
-unsigned long RpmAverage[2]={1,0};  // counter,sum time
+unsigned long RpmAverage[2]={0,0};  // counter,sum time
 bool RpmInterrupt = false;
+int InterruptDepth = 0;             // nesting counter for Interrupts(false/true)
 float TempCal=0;
 
 int SpeedAlertLimit_ms = 0;
@@ -195,6 +202,12 @@ long AlertTimer[2]={0,60000};
 #include <esp_task_wdt.h>
 #define WDT_TIMEOUT 73
 long WdtTimer=0;
+
+// Software watchdog - recovers from failures the HW task-WDT cannot catch
+// (network stack death / socket- or heap-exhaustion while loop() keeps running and feeding the WDT).
+#define CONN_LOST_REBOOT_MS 900000UL   // 15 min without ETH+MQTT connectivity -> restart
+#define HEAP_MIN_FREE 20000            // bytes; if free heap drops below this -> restart
+unsigned long ConnOkTimer=0;           // millis() of last healthy ETH+MQTT state
 
 byte InputByte[21];
 // #define Ser2net                  // Serial to ip proxy - DISABLE if board revision 0.3 or lower
@@ -226,7 +239,7 @@ int i = 0;
 #endif
 #include <WiFiUdp.h>
 #include "EEPROM.h"
-#define EEPROM_SIZE 368   /* up to 512
+#define EEPROM_SIZE 373   /* up to 512
 0|Byte    1|128
 1|Char    1|A
 2|UChar   1|255
@@ -276,6 +289,8 @@ int i = 0;
 239 - DS18B20 on/off 1
 240-243 - WindDirShift 4
 244-367 - 123 char API key windy.com
+368   - RainCount day-of-month (byte, 1-31; 255=unset)
+369-372 - RainCount (int 4) - persisted so a reboot does not lose today's rain
 
 !! Increment EEPROM_SIZE #define !!
 
@@ -570,6 +585,11 @@ String AprsCoordinates;
   DallasTemperature sensors(&oneWire);
   // arrays to hold device addresses
   DeviceAddress insideThermometer, outsideThermometer;
+  // forward declarations (Arduino auto-prototype skips functions using DeviceAddress)
+  void printAddress(DeviceAddress deviceAddress);
+  void printTemperature(DeviceAddress deviceAddress);
+  void printResolution(DeviceAddress deviceAddress);
+  void printData(DeviceAddress deviceAddress);
   // Assign address manually. The addresses below will need to be changed
   // to valid device addresses on your bus. Device address can be retrieved
   // by using either oneWire.search(deviceAddress) or individually via
@@ -579,6 +599,93 @@ String AprsCoordinates;
 #endif
 
 //-------------------------------------------------------------------------------------------------------
+
+// ----- Forward declarations -------------------------------------------------
+// Arduino IDE 1.8.x (arduino-builder + ctags 5.8) fails to auto-generate
+// function prototypes for this sketch (the prototype preprocessing aborts on
+// the very long line in AsyncElegantOTA's elegantWebpage.h), so every function
+// called before its definition would error "was not declared in this scope".
+// Declaring them explicitly makes the build independent of auto-prototyping.
+void IRAM_ATTR RPMcount();
+void Interrupts(boolean ON);
+void EEPROMcommit();
+void Watchdog();
+void RainCountStore();
+void RainCountRestore();
+void GetValue();
+void MqttPubValue();
+void check_radio();
+void GetHttpsWindy();
+double Babinet(double Pz, double T);
+int MpsToMs(int MPS);
+float PulseToMetterBySecond(long PULSE);
+long AvgRpmPulse();
+byte Azimuth();
+void AzShift(int AZ);
+void AprsWxIgate();
+String LeadingZero(int NumberOfZero, int NR);
+byte HiByte(int ID);
+byte LowByte(int ID);
+void CLI();
+void Enter();
+void EnterChar(int OUT);
+void EnterInt(int OUT);
+void EnterIntOld(int OUT);
+void Prn(int OUT, int LN, String STR);
+void ListCommands(int OUT);
+float RainPulseToMM(int PULSE);
+char RandomChar();
+byte IdPrefix(byte ID);
+byte IdSufix(byte ID);
+byte AsciiToHex(int ASCII);
+String getValue(String data, char separator, int index);
+void http1();
+void http2();
+void EthEvent(WiFiEvent_t event);
+void Mqtt();
+bool mqttReconnect();
+void MqttRx(char *topic, byte *payload, unsigned int length);
+void AfterMQTTconnect();
+void MqttPubString(String TOPIC, String DATA, bool RETAIN);
+void testClient(const char * host, uint16_t port);
+void TelnetAuth();
+void AuthQ(int NR, bool BAD);
+void Telnet();
+void SerialToIp();
+void I2cScanner();
+String UtcTime(int format);
+String Timestamp();
+void listDir(fs::FS &fs, const char * dirname, uint8_t levels);
+void createDir(fs::FS &fs, const char * path);
+void removeDir(fs::FS &fs, const char * path);
+void readFile(fs::FS &fs, const char * path);
+void writeFile(fs::FS &fs, const char * path, const char * message);
+void appendFile(fs::FS &fs, const char * path, const char * message);
+void renameFile(fs::FS &fs, const char * path1, const char * path2);
+void deleteFile(fs::FS &fs, const char * path);
+void testFileIO(fs::FS &fs, const char * path);
+void handleSet();
+void handleCal();
+void handlePostStop();
+void handleRoot();
+void handleADC();
+void handleAZ();
+void handleFrontAZ();
+void handleAZadc();
+void handleStat();
+void handleStart();
+void handleMax();
+void handleAnt();
+void handleAntName();
+void handleMapUrl();
+void handleEndstop();
+void handleEndstopLowZone();
+void handleEndstopHighZone();
+void handleCwraw();
+void handleCcwraw();
+void handleMAC();
+void handleUptime();
+// ----------------------------------------------------------------------------
 
 void setup() {
   // for (int i = 0; i < 8; i++) {
@@ -607,6 +714,8 @@ void setup() {
   while(!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
   }
+
+  randomSeed(esp_random());   // seed PRNG from hardware RNG (telnet auth challenge)
 
   #if defined(DS18B20)
     sensors.begin();
@@ -669,9 +778,13 @@ void setup() {
     //  Serial.println();
   #endif
 
-  #if defined(BMP280)
+  // single shared I2C bus (TwoWire port 0) for all on-board I2C sensors
+  #if defined(BMP280)||defined(HTU21D)||defined(SHT21)
     // I2Cone.begin(0x76, I2C_SDA, I2C_SCL, 100000); // SDA pin, SCL pin, 100kHz frequency
     I2Cone.begin(I2C_SDA, I2C_SCL, (uint32_t)100000); // SDA pin, SCL pin, 100kHz frequency
+  #endif
+
+  #if defined(BMP280)
     Serial.print("BMP280 sensor init ");
     if(!bmp.begin(0x76)){
       Serial.println("failed!");
@@ -690,12 +803,12 @@ void setup() {
     }
   #endif
 
-  #if defined(HTU21D) || defined(SHT)
+  #if defined(SHT)
     Wire.begin(I2C_SDA, I2C_SCL);
   #endif
   #if defined(HTU21D)
     Serial.print("HTU21D sensor init ");
-    if(!htu.begin()){
+    if(!htu.begin(&I2Cone)){   // share the same bus instance as BMP280
       Serial.println("failed!");
       // while (1);
       HTU21Denable=false;
@@ -1074,10 +1187,11 @@ void setup() {
   esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
   esp_task_wdt_add(NULL); //add current thread to WDT watch
   WdtTimer=millis();
+  ConnOkTimer=millis();   // software-watchdog connectivity timer counts from boot
 
   //init and get the time
    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-   RainCountDayOfMonth=UtcTime(2);
+   RainCountRestore();   // restore today's rain counter from EEPROM (survive reboot)
    Interrupts(true);
 
    #if defined(AJAX)
@@ -1184,12 +1298,53 @@ void IRAM_ATTR RPMcount(){    // must be before attachInterrupt ;)
 }
 //-------------------------------------------------------------------------------------------------------
 void Interrupts(boolean ON){
+  // nesting safe - inner Interrupts(true) must not re-enable prematurely
   if(ON==true){
-    attachInterrupt(RpmPin, RPMcount, FALLING);
+    if(InterruptDepth>0){
+      InterruptDepth--;
+    }
+    if(InterruptDepth==0){
+      attachInterrupt(RpmPin, RPMcount, FALLING);
+    }
     // attachInterrupt(digitalPinToInterrupt(RpmPin), RPMcount, FALLING);
     // attachInterrupt(digitalPinToInterrupt(RpmPin), RPMcount, RISING);
   }else{
-    detachInterrupt(digitalPinToInterrupt(RpmPin));
+    if(InterruptDepth==0){
+      detachInterrupt(digitalPinToInterrupt(RpmPin));
+    }
+    InterruptDepth++;
+  }
+}
+//-------------------------------------------------------------------------------------------------------
+// commit EEPROM with the wind interrupt disabled - the RPM ISR (digitalRead)
+// must not run while the flash is being written
+void EEPROMcommit(){ Interrupts(false); EEPROM.commit(); Interrupts(true); }
+
+// Persist today's rain counter to EEPROM so a reboot (recovery restart / power loss)
+// does not lose the daily rain total. Writes only when the value changed (EEPROM wear).
+void RainCountStore(){
+  int d = RainCountDayOfMonth.toInt();   // "26"->26 ; "n/a"->0
+  if(d>=1 && d<=31){
+    if(EEPROM.readByte(368)!=(byte)d || EEPROM.readInt(369)!=RainCount){
+      EEPROM.writeByte(368, (byte)d);
+      EEPROM.writeInt(369, RainCount);
+      EEPROMcommit();
+    }
+  }
+}
+
+// Restore today's rain counter from EEPROM at boot. The day-change logic in GetValue()
+// (UtcTime(2)!=RainCountDayOfMonth) then keeps it for the same day or zeroes it across midnight.
+void RainCountRestore(){
+  byte d = EEPROM.readByte(368);
+  if(d>=1 && d<=31){
+    int c = EEPROM.readInt(369);
+    if(c<0 || c>100000){ c=0; }   // guard against unset/corrupt value
+    RainCount = c;
+    RainCountDayOfMonth = (d<10?"0":"") + String(d);   // zero-padded to match UtcTime(2) "%d"
+  }else{
+    RainCount = 0;
+    RainCountDayOfMonth = UtcTime(2);
   }
 }
 //-------------------------------------------------------------------------------------------------------
@@ -1221,7 +1376,7 @@ void Watchdog(){
     if(needEEPROMcommit==true){
       Interrupts(false);
       needEEPROMcommit = false;
-      EEPROM.commit();
+      EEPROMcommit();
       MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), true);
       MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
       Interrupts(true);
@@ -1241,12 +1396,40 @@ void Watchdog(){
     }
   }
 
+  // Software watchdog - recover from failures the HW task-WDT can't catch.
+  // The HW WDT only detects a frozen loop()/CPU. The real long-term failure mode is the
+  // network stack dying (socket/heap exhaustion) while loop() keeps running and feeding the WDT.
+  // Here we restart if ETH+MQTT connectivity has been lost too long, or free heap is critically low.
+  {
+    static unsigned long ConnLastCheck=0;
+    if(millis()-ConnLastCheck > 5000){   // check every 5s
+      ConnLastCheck=millis();
+      if(eth_connected==true && mqttClient.connected()==true){
+        ConnOkTimer=millis();   // healthy
+      }
+      bool recoveryReboot=false;
+      if(ConnOkTimer>0 && millis()-ConnOkTimer > CONN_LOST_REBOOT_MS){
+        Prn(3, 1,"** Software watchdog: ETH/MQTT connectivity lost too long - restart **");
+        recoveryReboot=true;
+      }
+      if(ESP.getFreeHeap() < HEAP_MIN_FREE){
+        Prn(3, 1,"** Software watchdog: free heap critically low ("+String(ESP.getFreeHeap())+" B) - restart **");
+        recoveryReboot=true;
+      }
+      if(recoveryReboot==true){
+        RainCountStore();   // persist today's rain so the recovery reboot does not lose it
+        delay(200);
+        ESP.restart();
+      }
+    }
+  }
+
   // frenetic mode
   if(EnableSerialDebug>1 && millis()-FreneticModeTimer > 1000){
     Azimuth();
-    Prn(3, 1, "  Wind speed az/last/avg/max "+String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h");
+    Prn(3, 1, "  Wind speed az/last/avg/max "+String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(AvgRpmPulse())*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h");
     if(eth_connected==true && mqttClient.connected()==true){
-      MqttPubString("WindSpeed_az/last/avg/max", String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h", false);
+      MqttPubString("WindSpeed_az/last/avg/max", String(WindDir)+"° "+String(PulseToMetterBySecond(RpmPulse)*3.6)+"/"+String(PulseToMetterBySecond(AvgRpmPulse())*3.6)+"/"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h", false);
     }
     FreneticModeTimer=millis();
   }
@@ -1263,7 +1446,7 @@ void Watchdog(){
     EEPROM.writeByte(34, ShiftOutByte[0]);
     EEPROM.writeByte(35, ShiftOutByte[1]);
     EEPROM.writeByte(36, ShiftOutByte[2]);
-    EEPROM.commit();
+    EEPROMcommit();
     delay(1000);
     TelnetServerClients[0].stop();
     ESP.restart();
@@ -1277,7 +1460,7 @@ void Watchdog(){
     EEPROM.writeByte(34, ShiftOutByte[0]);
     EEPROM.writeByte(35, ShiftOutByte[1]);
     EEPROM.writeByte(36, ShiftOutByte[2]);
-    EEPROM.commit();
+    EEPROMcommit();
     #if defined(ShiftOut)
       // digitalWrite(ShiftOutLatchPin, LOW);  // když dáme latchPin na LOW mužeme do registru poslat data
       // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, 0x01);
@@ -1373,6 +1556,9 @@ void Watchdog(){
     AprsWxIgate();
     GetHttpsWindy();
 
+    RainCountStore();   // persist today's rain counter (only writes EEPROM when it changed)
+    MqttPubString("FreeHeap", String(ESP.getFreeHeap()), false);   // monitor heap trend (leak/fragmentation)
+
     WindSpeedMaxPeriodUTC="";
     MeasureTimer[0]=millis();
     Interrupts(true);
@@ -1412,42 +1598,55 @@ void GetValue(){
 
   Azimuth();
   RainTodayMM = RainPulseToMM(RainCount);
-  WindSpeedAvgMPS = PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]);
+  WindSpeedAvgMPS = PulseToMetterBySecond(AvgRpmPulse());
   if(PeriodMinRpmPulse<987654321){
     WindSpeedMaxPeriodMPS = PulseToMetterBySecond(PeriodMinRpmPulse);
   }else{
     WindSpeedMaxPeriodMPS = 0;
   }
-  #if defined(BMP280)
-    if(BMP280enable==true){
-      if(ExtTemp==true){
-        sensors.requestTemperatures();
-        TemperatureCelsiusDS18B20 = sensors.getTempC(insideThermometer);
-        PressureHPaBMP280 = Babinet(double(bmp.readPressure()), double((TemperatureCelsiusDS18B20+TempCal)*1.8+32))/100;
-      }else{
-        PressureHPaBMP280 = Babinet(double(bmp.readPressure()), double((htu.readTemperature())*1.8+32))/100;
+  // read each sensor only once per cycle
+  bool ds18b20valid = false;
+  float htuTemp = 0;
+
+  #if defined(DS18B20)
+    if(ExtTemp==true){
+      sensors.requestTemperatures();
+      float dsTemp = sensors.getTempC(insideThermometer);
+      if(dsTemp != DEVICE_DISCONNECTED_C){   // -127 = sensor disconnected
+        TemperatureCelsiusDS18B20 = dsTemp;
+        ds18b20valid = true;
       }
-      TemperatureCelsiusBMP280 = bmp.readTemperature();
-      TemperatureCelsius = TemperatureCelsiusBMP280;
-      PressureHPA = PressureHPaBMP280;
     }
   #endif
   #if defined(HTU21D)
     if(HTU21Denable==true){
+      htuTemp = htu.readTemperature();
       HumidityRelPercentHTU21D = constrain(htu.readHumidity(), 0, 100);
-      DewPointCelsiusHTU21D = htu.readTemperature() - (100.0 - constrain(htu.readHumidity(), 0, 100)) / 5.0;
+      DewPointCelsiusHTU21D = htuTemp - (100.0 - HumidityRelPercentHTU21D) / 5.0;
       DewPointCelsius = DewPointCelsiusHTU21D;
       HumidityRelPercent = HumidityRelPercentHTU21D;
     }
   #endif
-  #if defined(DS18B20)
-    if(ExtTemp==true){
-      sensors.requestTemperatures();
-      // float temperatureC = sensors.getTempCByIndex(0);
-      TemperatureCelsiusDS18B20 = sensors.getTempC(insideThermometer);
-      TemperatureCelsius = TemperatureCelsiusDS18B20;
+  #if defined(BMP280)
+    if(BMP280enable==true){
+      float bmpPress = bmp.readPressure();
+      TemperatureCelsiusBMP280 = bmp.readTemperature();
+      // reference temperature for sea-level pressure conversion (in Fahrenheit)
+      double refTempF;
+      if(ds18b20valid==true){
+        refTempF = (TemperatureCelsiusDS18B20+TempCal)*1.8+32;
+      }else{
+        refTempF = htuTemp*1.8+32;   // fallback to HTU21D (or 0 if not present)
+      }
+      PressureHPaBMP280 = Babinet(double(bmpPress), refTempF)/100;
+      TemperatureCelsius = TemperatureCelsiusBMP280;
+      PressureHPA = PressureHPaBMP280;
     }
   #endif
+  // DS18B20 is the master temperature source when available
+  if(ds18b20valid==true){
+    TemperatureCelsius = TemperatureCelsiusDS18B20;
+  }
 
   TemperatureCelsius = TemperatureCelsius + TempCal;
 
@@ -1493,7 +1692,7 @@ void GetValue(){
     }
   #endif
 
-  RpmAverage[0]=1;
+  RpmAverage[0]=0;
   RpmAverage[1]=0;
   PeriodMinRpmPulse=987654321;
   // WindSpeedMaxPeriodUTC="";
@@ -1607,10 +1806,12 @@ void check_radio() {
 void GetHttpsWindy(){
   #if defined(WINDY)
   client.setCACert(rootCACertificate);
+  client.setTimeout(8);   // 8s timeout for TLS read/connect, avoid blocking on a stalled server
 
   Prn(3, 1, "\n[https] Starting connection to server...");
   if (!client.connect(server, 443)){
     Prn(3, 1, "[https] Connection failed!");
+    client.stop();   // release TLS context/socket on failed connect (avoid leak)
   }else{
     Prn(3, 1, "[https] Connected to server!");
     // Make a HTTP request:
@@ -1699,6 +1900,15 @@ float PulseToMetterBySecond(long PULSE){
   }
 }
 //-------------------------------------------------------------------------------------------------------
+// average pulse length over the period, safe against division by zero
+long AvgRpmPulse(){
+  if(RpmAverage[0]>0){
+    return RpmAverage[1]/RpmAverage[0];
+  }else{
+    return 0;
+  }
+}
+//-------------------------------------------------------------------------------------------------------
 byte Azimuth(){    // run from interrupt
   byte rxShiftInByte=0x00;
   digitalWrite(ShiftInLatchPin,0);     //Set latch pin to 0 to get data from the CD4021
@@ -1774,19 +1984,18 @@ byte Azimuth(){    // run from interrupt
 
 //-------------------------------------------------------------------------------------------------------
 void AzShift(int AZ){
-  WindDir=AZ+WindDirShift;
-  if(WindDir>360){
-    WindDir=WindDir-360;
-  }
+  WindDir=(AZ+WindDirShift)%360;   // wrap 0-359, handles also exactly 360
 }
 //-------------------------------------------------------------------------------------------------------
 
 void AprsWxIgate() {
   if(AprsON==true){
+    AprsClient.setTimeout(5);   // 5s socket timeout, avoid blocking on a stalled server
     if (!AprsClient.connect("czech.aprs2.net", 14580)) {  // client.connect(URL, port);  char URL[]="google.com"
       if(EnableSerialDebug>0){
         Prn(3, 1,"APRS client connect failed!");
       }
+      AprsClient.stop();   // release socket even on failed connect (avoid fd leak)
       return;
     }
     // login
@@ -1827,6 +2036,7 @@ void AprsWxIgate() {
     }
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
 
+    AprsClient.stop();   // close TCP socket, otherwise sockets leak every cycle -> lwip runs out of fd
   }
 }
 
@@ -1969,7 +2179,7 @@ void CLI(){
             EEPROM.writeByte(161+i, intBuf);
           }
           // Prn(OUT, 1,"EEPROMcomit");
-          EEPROM.commit();
+          EEPROMcommit();
         }else{
           Prn(OUT, 1,"Out of range.");
           break;
@@ -2020,7 +2230,7 @@ void CLI(){
             EEPROM.write(i, 0xff);
             Prn(OUT, 0,".");
           }
-          EEPROM.commit();
+          EEPROMcommit();
           Prn(OUT, 1,"");
           Prn(OUT, 1,"  Eeprom erased done");
         }else{
@@ -2061,7 +2271,7 @@ void CLI(){
       EEPROM.write(38, 0); // address, value
       EEPROM.write(39, 0); // address, value
       EEPROM.write(40, 0); // address, value
-      EEPROM.commit();
+      EEPROMcommit();
 
     // @
     }else if(incomingByte==64){
@@ -2071,7 +2281,7 @@ void CLI(){
         EEPROM.writeByte(34, ShiftOutByte[0]);
         EEPROM.writeByte(35, ShiftOutByte[1]);
         EEPROM.writeByte(36, ShiftOutByte[2]);
-        EEPROM.commit();
+        EEPROMcommit();
         delay(1000);
       }
       TelnetServerClients[0].stop();
@@ -2115,7 +2325,7 @@ void CLI(){
           EEPROM.write(140+i, 0xff);
         }
       }
-      EEPROM.commit();
+      EEPROMcommit();
       Prn(OUT, 1,"** Device will be restarted **");
       delay(1000);
       ESP.restart();
@@ -2126,7 +2336,7 @@ void CLI(){
         AprsON=false;
         Prn(OUT, 1,"** APRS DISABLE **");
         EEPROM.write(199, AprsON); // address, value
-        EEPROM.commit();
+        EEPROMcommit();
       }else{
         Prn(OUT, 1,"** Do you own a valid amateur radio license? **");
         EnterChar(OUT);
@@ -2137,7 +2347,7 @@ void CLI(){
             AprsON=true;
             Prn(OUT, 1,"** APRS ENABLE **");
             EEPROM.write(199, AprsON); // address, value
-            EEPROM.commit();
+            EEPROMcommit();
           }else{
             Prn(OUT, 1,"  bye");
           }
@@ -2164,7 +2374,7 @@ void CLI(){
             EEPROM.write(207+i, 0xff);
           }
         }
-        EEPROM.commit();
+        EEPROMcommit();
 
       // c
       }else if(incomingByte==99 && AprsON==true){
@@ -2186,7 +2396,7 @@ void CLI(){
             EEPROM.write(212+i, 0xff);
           }
         }
-        EEPROM.commit();
+        EEPROMcommit();
 
       // m
       }else if(incomingByte==109){
@@ -2211,7 +2421,7 @@ void CLI(){
         if(intBuf>=0 && intBuf<=7300){
           Altitude = intBuf;
           EEPROM.writeInt(231, Altitude); // address, value
-          EEPROM.commit();
+          EEPROMcommit();
           Prn(OUT, 1," altitude "+String(EEPROM.readInt(231))+"m has been saved");
         }else{
           Prn(OUT, 1," Out of range");
@@ -2240,7 +2450,7 @@ void CLI(){
         if(intBuf>=0 && intBuf<=359){
           WindDirShift = intBuf;
           EEPROM.writeInt(240, WindDirShift); // address, value
-          EEPROM.commit();
+          EEPROMcommit();
           Prn(OUT, 1," shift "+String(EEPROM.readInt(240))+"° has been saved");
         }else{
           Prn(OUT, 1," Out of range");
@@ -2271,7 +2481,7 @@ void CLI(){
           if(intBuf>=6 && intBuf<=255){
             HWREVpcb = intBuf;
             EEPROM.writeUChar(4, HWREVpcb); // address, value
-            EEPROM.commit();
+            EEPROMcommit();
             Prn(OUT, 1," PCB version "+String(EEPROM.readUChar(4))+" has been saved");
           }else{
             Prn(OUT, 1," Out of range");
@@ -2317,7 +2527,7 @@ void CLI(){
           TempCal = (float)intBuf;
         }
         EEPROM.writeShort(2, TempCal*100.0); // address, value
-        EEPROM.commit();
+        EEPROMcommit();
         Prn(OUT, 1," shift "+String((float)EEPROM.readShort(2)/100.0)+"C° has been saved");
 
 
@@ -2360,7 +2570,7 @@ void CLI(){
           mmInPulse = (float)intBuf;
         }
         EEPROM.writeShort(5, mmInPulse*100.0); // address, value
-        EEPROM.commit();
+        EEPROMcommit();
         Prn(OUT, 1," rain "+String((float)EEPROM.readShort(5)/100.0)+"mm/pulse has been saved");
 
     // W
@@ -2370,7 +2580,7 @@ void CLI(){
       if(incomingByte==89 || incomingByte==121){
         EEPROM.writeLong(169, 987654321);
         EEPROM.writeByte(173, 255);
-        EEPROM.commit();
+        EEPROMcommit();
         MqttPubString("WindSpeedMax-mps", "", true);
         MqttPubString("WindSpeedMax-utc", "", true);
         Prn(OUT, 1,"** IP switch will be restarted **");
@@ -2440,11 +2650,20 @@ void Enter(){
   InputByte[0]=0;
   incomingByte = 0;
   bool br=false;
+  unsigned long EnterTimeout=millis();   // abort input after 30s (avoid WDT reset)
   Prn(OUT, 0,"> ");
 
   if(OUT==0){
     while(br==false) {
+      esp_task_wdt_reset();
+      if(millis()-EnterTimeout>30000){
+        br=true;
+        InputByte[0]=0;
+        Prn(OUT, 1," timeout");
+        break;
+      }
       if(Serial.available()){
+        EnterTimeout=millis();
         incomingByte=Serial.read();
         if(incomingByte==13 || incomingByte==59){ // CR or ;
           br=true;
@@ -2471,7 +2690,15 @@ void Enter(){
     if (TelnetServerClients[0] && TelnetServerClients[0].connected()){
 
         while(br==false){
+          esp_task_wdt_reset();
+          if(millis()-EnterTimeout>30000){
+            br=true;
+            InputByte[0]=0;
+            Prn(OUT, 1," timeout");
+            break;
+          }
           if(TelnetServerClients[0].available()){
+            EnterTimeout=millis();
             incomingByte=TelnetServerClients[0].read();
             if(incomingByte==10){
               br=true;
@@ -2508,15 +2735,21 @@ void Enter(){
 //-------------------------------------------------------------------------------------------------------
 void EnterChar(int OUT){
   incomingByte = 0;
+  unsigned long EnterTimeout=millis();   // abort input after 30s (avoid WDT reset)
   Prn(OUT, 0," > ");
   if(OUT==0){
     while (Serial.available() == 0) {
-      // Wait
+      esp_task_wdt_reset();
+      if(millis()-EnterTimeout>30000){ break; }
     }
-    incomingByte = Serial.read();
+    if(Serial.available()>0){
+      incomingByte = Serial.read();
+    }
   }else if(OUT==1){
     if (TelnetServerClients[0] && TelnetServerClients[0].connected()){
       while(incomingByte==0){
+        esp_task_wdt_reset();
+        if(millis()-EnterTimeout>30000){ break; }
         if(TelnetServerClients[0].available()){
           incomingByte=TelnetServerClients[0].read();
         }
@@ -2535,9 +2768,12 @@ void EnterChar(int OUT){
 
 void EnterInt(int OUT){
   incomingByte = 0;
+  unsigned long EnterTimeout=millis();   // abort input after 30s (avoid WDT reset)
   Prn(OUT, 0,"> ");
   if(OUT==0){
     while(!Serial.available()) {
+      esp_task_wdt_reset();
+      if(millis()-EnterTimeout>30000){ break; }
     }
     delay(3000);
     CompareInt = Serial.parseInt();
@@ -2548,6 +2784,8 @@ void EnterInt(int OUT){
       int count=0;
 
       while(incomingByte==0 && br==true){
+        esp_task_wdt_reset();
+        if(millis()-EnterTimeout>30000){ break; }
         if(TelnetServerClients[0].available()){
           incomingByte=TelnetServerClients[0].read();
           // out of 0-9
@@ -2755,7 +2993,7 @@ void ListCommands(int OUT){
     Prn(OUT, 1,"-----------------  Sensors  -----------------");
     #if HWREVsw==8
       int intBuf = analogRead(RainPin);
-      Prn(OUT, 0,"  RainPin raw "+String(analogRead(intBuf)));
+      Prn(OUT, 0,"  RainPin raw "+String(intBuf));
       if(intBuf<1000){
         Prn(OUT, 0," > false|");
       }else if(intBuf>=1000 && intBuf<=2000){
@@ -2794,7 +3032,7 @@ void ListCommands(int OUT){
     Prn(OUT, 0,"  RpmPin ");
       Prn(OUT, 0,String(digitalRead(RpmPin)));
     Prn(OUT, 1, "|Wind speed last   "+String(RpmPulse)+" ms|"+String(PulseToMetterBySecond(RpmPulse))+" m/s|"+String(PulseToMetterBySecond(RpmPulse)*3.6)+" km/h");
-    Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(RpmAverage[1]/RpmAverage[0])+" ms|"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0]))+" m/s|"+String(PulseToMetterBySecond(RpmAverage[1]/RpmAverage[0])*3.6)+" km/h");
+    Prn(OUT, 1, "             avg ("+String(RpmAverage[1])+"/"+String(RpmAverage[0])+") "+String(AvgRpmPulse())+" ms|"+String(PulseToMetterBySecond(AvgRpmPulse()))+" m/s|"+String(PulseToMetterBySecond(AvgRpmPulse())*3.6)+" km/h");
     Prn(OUT, 1, "             MAX in period   "+String(PeriodMinRpmPulse)+" ms|"+String(PulseToMetterBySecond(PeriodMinRpmPulse))+" m/s|"+String(PulseToMetterBySecond(PeriodMinRpmPulse)*3.6)+" km/h("+String(WindSpeedMaxPeriodUTC)+")");
     Prn(OUT, 1, "             lifetime MAX    "+String(MinRpmPulse)+" ms|"+String(PulseToMetterBySecond(MinRpmPulse))+" m/s|"+String(PulseToMetterBySecond(MinRpmPulse)*3.6)+" km/h("+String(MinRpmPulseTimestamp)+")");
     #if defined(HTU21D)
@@ -3477,7 +3715,7 @@ void http1(){
   // listen for incoming clients
   WiFiClient webClient = server1.available();
   if (webClient) {
-    Interrupts(false);
+    // keep wind interrupt running - do NOT disable it during HTTP serving
     if(EnableSerialDebug>0){
       Serial.println("WIFI New webClient");
     }
@@ -3485,8 +3723,11 @@ void http1(){
     charcount=0;
     // an http request ends with a blank line
     boolean currentLineIsBlank = true;
-    while (webClient.connected()) {
+    unsigned long httpTimeout=millis();   // abort stuck client (avoid WDT reset)
+    while (webClient.connected() && millis()-httpTimeout<3000) {
+      esp_task_wdt_reset();
       if (webClient.available()) {
+        httpTimeout=millis();
         char c = webClient.read();
         HTTP_req += c;
         // if(EnableSerialDebug>0){
@@ -3683,9 +3924,7 @@ void http1(){
     webClient.stop();
    if(EnableSerialDebug>0){
      Serial.println("WIFI webClient disconnected");
-     MeasureTimer[0]=millis()+5000-MeasureTimer[1];
    }
-   Interrupts(true);
   }
 }
 //-------------------------------------------------------------------------------------------------------
@@ -3694,7 +3933,7 @@ void http2(){
   // listen for incoming clients
   WiFiClient webClient2 = server2.available();
   if (webClient2) {
-    Interrupts(false);
+    // keep wind interrupt running - do NOT disable it during HTTP serving
     if(EnableSerialDebug>0){
       Serial.println("WIFI New webClient2");
     }
@@ -3702,8 +3941,11 @@ void http2(){
     charcount=0;
     // an http request ends with a blank line
     boolean currentLineIsBlank = true;
-    while (webClient2.connected()) {
+    unsigned long httpTimeout=millis();   // abort stuck client (avoid WDT reset)
+    while (webClient2.connected() && millis()-httpTimeout<3000) {
+      esp_task_wdt_reset();
       if (webClient2.available()) {
+        httpTimeout=millis();
         char c = webClient2.read();
         HTTP_req += c;
         // if(EnableSerialDebug>0){
@@ -3778,9 +4020,7 @@ void http2(){
     webClient2.stop();
    if(EnableSerialDebug>0){
      Serial.println("WIFI webClient2 disconnected");
-     MeasureTimer[0]=millis()+5000-MeasureTimer[1];
    }
-   Interrupts(true);
   }
 }
 //-------------------------------------------------------------------------------------------------------
@@ -3930,8 +4170,6 @@ bool mqttReconnect() {
 void MqttRx(char *topic, byte *payload, unsigned int length) {
   String CheckTopicBase;
   CheckTopicBase.reserve(100);
-  byte* p = (byte*)malloc(length);
-  memcpy(p,payload,length);
   // static bool HeardBeatStatus;
   if(EnableSerialDebug>0){
     Prn(3, 0, "RX MQTT ");
@@ -3991,19 +4229,12 @@ void AfterMQTTconnect(){
 }
 //-----------------------------------------------------------------------------------
 void MqttPubString(String TOPIC, String DATA, bool RETAIN){
-  char charbuf[50];
-   // // memcpy( charbuf, mac, 6);
-   // ETH.macAddress().toCharArray(charbuf, 10);
-   // charbuf[6] = 0;
   Interrupts(false);
-  // if(EnableEthernet==1 && MQTT_ENABLE==1 && EthLinkStatus==1 && mqttClient.connected()==true){
+  // reconnect is handled in Mqtt() - here only publish when connected
   if(mqttClient.connected()==true){
-    if (mqttClient.connect(MACchar)) {
-      String topic = String(YOUR_CALL) + "/WX/"+TOPIC;
-      topic.toCharArray( mqttPath, 50 );
-      DATA.toCharArray( mqttTX, 50 );
-      mqttClient.publish(mqttPath, mqttTX, RETAIN);
-    }
+    String topic = String(YOUR_CALL) + "/WX/"+TOPIC;
+    // publish directly from String, no fixed 50 char truncation
+    mqttClient.publish(topic.c_str(), DATA.c_str(), RETAIN);
   }
   Interrupts(true);
 }
@@ -4035,7 +4266,7 @@ void TelnetAuth(){
       if(TelnetLoginFails>=3 && millis()-TelnetLoginFailsBanTimer[0]<TelnetLoginFailsBanTimer[1]){
         Prn(1, 1,"");
         Prn(1, 0,"   Ten minutes login ban, PSE QRX ");
-        Prn(1, 0,String((TelnetLoginFailsBanTimer[1]-millis()-TelnetLoginFailsBanTimer[0])/1000));
+        Prn(1, 0,String((TelnetLoginFailsBanTimer[1]-(millis()-TelnetLoginFailsBanTimer[0]))/1000));
         Prn(1, 1," seconds");
         delay(3000);
         TelnetServerClients[0].stop();
@@ -4125,7 +4356,7 @@ void TelnetAuth(){
       EEPROM.write(38, TelnetServerClientAuth[1]); // address, value
       EEPROM.write(39, TelnetServerClientAuth[2]); // address, value
       EEPROM.write(40, TelnetServerClientAuth[3]); // address, value
-      EEPROM.commit();
+      EEPROMcommit();
       break; }
   }
 }
@@ -4564,7 +4795,7 @@ String UtcTime(int format){
   if (eth_connected==false) {
     strcpy(buf, "n/a");
   }else{
-    if(!getLocalTime(&timeinfo)){
+    if(!getLocalTime(&timeinfo, 0)){   // 0ms timeout - return immediately, never block the loop
       strcpy(buf, "n/a");
     }else{
       if(format==1){
