@@ -2036,6 +2036,8 @@ void AprsWxIgate() {
     }
     AprsClient.println(YOUR_CALL+">APRSWX,TCPIP*,qAC:> remoteqth.com 3D-printed WX station");
 
+    AprsClient.flush();  // push the TX buffer out before closing
+    delay(500);          // let the server read the lines; stop() right away aborts unsent data -> nothing reaches APRS
     AprsClient.stop();   // close TCP socket, otherwise sockets leak every cycle -> lwip runs out of fd
   }
 }
