@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WX station</title>
+<style>
+  :root{--bg:#2b2f33;--card:#373c41;--fg:#e8eaed;--mut:#9aa0a6;--accent:#3b8eea;--warn:#e0a020;--rain:#4a9be0;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg);
+       min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:1rem}
+  header{width:100%;max-width:760px;display:flex;justify-content:space-between;align-items:baseline;gap:.5rem}
+  header h1{font-size:1.15rem;margin:0;font-weight:600}
+  header .utc{color:var(--mut);font-size:.85rem;font-variant-numeric:tabular-nums}
+  .temp{font-size:clamp(4rem,22vw,8rem);font-weight:200;line-height:1;margin:.3em 0 .1em}
+  .temp small{font-size:.35em;color:var(--mut);vertical-align:super}
+  .grid{width:100%;max-width:760px;display:grid;gap:.7rem;grid-template-columns:repeat(3,1fr)}
+  .card{background:var(--card);border-radius:12px;padding:.9rem 1rem;text-align:center}
+  .card .lbl{color:var(--mut);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em}
+  .card .val{font-size:1.7rem;font-weight:400;margin-top:.25rem;font-variant-numeric:tabular-nums}
+  .card .val small{font-size:.5em;color:var(--mut)}
+  .card.w1{grid-column:3;grid-row:1}   /* wind avg: last column, top */
+  .card.w2{grid-column:3;grid-row:2}   /* wind max: last column, below avg */
+  .winddir{display:flex;flex-direction:column;align-items:center;gap:.25rem;margin:1.2rem 0 .2rem}
+  .winddir .arrow{font-size:4.5rem;transition:transform .6s ease;display:inline-block}
+  .winddir .wd{color:var(--mut);font-size:1.15rem;font-variant-numeric:tabular-nums}
+  .btns{display:flex;gap:.8rem;margin:1.6rem 0 .5rem;flex-wrap:wrap;justify-content:center}
+  .btn{padding:.75rem 1.8rem;border-radius:10px;background:var(--accent);color:#fff;text-decoration:none;
+       font-weight:600;font-size:1rem;border:none;cursor:pointer}
+  .btn.sec{background:#4b5258}
+  #otaBtn{background:#4b5258}
+  #otaBtn:hover,.btn.sec:hover{background:var(--accent)}
+  .links{margin-top:.6rem;font-size:.85rem}
+  .links a{color:var(--accent);text-decoration:none;margin:0 .5rem}
+  .stale{opacity:.45}
+  footer{color:var(--mut);font-size:.75rem;margin-top:auto;padding-top:1rem}
+  .hide{display:none}
+</style>
+</head>
+<body>
+  <header>
+    <h1 id="call">WX</h1>
+    <span class="utc">UTC <span id="utc">--:--</span></span>
+  </header>
+
+  <div class="temp"><span id="temp">--</span><small>&deg;C</small></div>
+
+  <div class="grid">
+    <div class="card" id="cardHum">
+      <div class="lbl">Humidity</div><div class="val"><span id="hum">--</span><small>%</small></div>
+    </div>
+    <div class="card" id="cardPress">
+      <div class="lbl">Pressure</div><div class="val"><span id="press">--</span> <small>hPa</small></div>
+    </div>
+    <div class="card">
+      <div class="lbl">Rain today</div><div class="val"><span id="rain">--</span> <small>mm</small></div>
+    </div>
+    <div class="card" id="cardDew">
+      <div class="lbl">Dew point</div><div class="val"><span id="dew">--</span> <small>&deg;C</small></div>
+    </div>
+    <div class="card w1">
+      <div class="lbl">Wind avg</div><div class="val"><span id="wavg">--</span> <small>m/s</small></div>
+    </div>
+    <div class="card w2">
+      <div class="lbl">Wind max</div><div class="val"><span id="wmax">--</span> <small>m/s</small></div>
+    </div>
+  </div>
+
+  <div class="winddir" id="windDirWrap">
+    <div class="arrow" id="arrow">&#8593;</div>
+    <div class="wd"><span id="wdir">--</span>&deg;</div>
+  </div>
+
+  <div class="btns">
+    <a class="btn" id="otaBtn" href="#">OTA</a>
+    <a class="btn sec" href="/setup">SETUP</a>
+    <a class="btn sec" href="/wall">MQTT wall</a>
+  </div>
+  <div class="links">
+    <a id="aprsLink" class="hide" target="_blank" rel="noopener">aprs.fi</a>
+    <a id="windyLink" class="hide" target="_blank" rel="noopener">windy.com</a>
+  </div>
+
+  <footer>rev <span id="rev">-</span> &middot; auto-refresh every 5 s</footer>
+
+<script>
+  var DIRS=["N","NE","E","SE","S","SW","W","NW"];
+  // OTA lives on the async server on port 82
+  document.getElementById('otaBtn').href = location.protocol+'//'+location.hostname+':82/update';
+
+  function setText(id,v){document.getElementById(id).textContent=v;}
+  function fmt(v,d){return (v==null||isNaN(v))?'--':Number(v).toFixed(d);}
+
+  function apply(d){
+    document.body.classList.remove('stale');
+    setText('call', d.call || 'WX');
+    setText('utc', d.utc || '--');
+    setText('temp', fmt(d.tempC,1));
+    setText('dew', fmt(d.dewC,1));
+    setText('hum', fmt(d.hum,0));
+    setText('press', fmt(d.pressHPa,1));
+    setText('rain', fmt(d.rainMM,2));
+    setText('wavg', fmt(d.windAvgMs,1));
+    setText('wmax', fmt(d.windMaxMs,1));
+    setText('wdir', d.windDir);
+    setText('rev', d.rev || '-');
+    document.getElementById('arrow').style.transform='rotate('+(d.windDir||0)+'deg)';
+    document.getElementById('cardHum').classList.toggle('hide', !d.hasHum);
+    document.getElementById('cardPress').classList.toggle('hide', !d.hasPress);
+    document.getElementById('cardDew').classList.toggle('hide', !d.hasHum);
+    // wind direction only meaningful when there is wind: hide arrow + azimuth at zero speed
+    var calm = !(Number(d.windAvgMs)>0 || Number(d.windMaxMs)>0);
+    document.getElementById('windDirWrap').classList.toggle('hide', calm);
+
+    var ap=document.getElementById('aprsLink');
+    if(d.aprs && d.call){ap.href='https://aprs.fi/#!call='+encodeURIComponent(d.call);ap.classList.remove('hide');}
+    else ap.classList.add('hide');
+    var wl=document.getElementById('windyLink');
+    if(d.windyId){wl.href='https://www.windy.com/station/pws-'+encodeURIComponent(d.windyId);wl.classList.remove('hide');}
+    else wl.classList.add('hide');
+  }
+
+  function poll(){
+    fetch('/api/live',{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(apply)
+      .catch(function(){document.body.classList.add('stale');});
+  }
+  poll();
+  setInterval(poll,5000);
+</script>
+</body>
+</html>

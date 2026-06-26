@@ -1,6 +1,20 @@
 /*
 
-python /home/dan/Arduino/hardware/espressif/esp32/tools/esptool/esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 115200 --before default_reset --after hard_reset write_flash -z --flash_mode dio --flash_freq 80m --flash_size 4MB 0x10000 /home/dan/Arduino/hra/ok1hra/esp32/wx/20210407-wx.ino.esp32-poe.bin
+Release new firmware version:
+1. Increase REV value in this .ino
+2. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary
+   (HARDWARE ESP32-POE; the sketch-local partitions.csv is applied automatically)
+3. generate all .bin and publish to GitHub Pages: $ ./tools/all.sh --publish
+4. git commit with the Release number as comment and push
+
+Partial update (without a release):
+1. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary (HARDWARE ESP32-POE)
+2. build SPIFFS image: $ tools/build_spiffs_image.sh
+3. upload firmware.bin and build/spiffs.bin via EasyOTA at http://[ip]:82/update
+4. git commit and push
+
+Firmware download page: https://ok1hra.github.io/3D-print-WX-station/
+One-time setup: GitHub repo Settings -> Pages -> Branch: gh-pages, folder /(root)
 
 3D printed WX station
 ----------------------
@@ -215,19 +229,9 @@ byte InputByte[21];
 // #define Ser2net                  // Serial to ip proxy - DISABLE if board revision 0.3 or lower
 #define EnableOTA                // Enable flashing ESP32 Over The Air
 // int NumberOfEncoderOutputs = 8;  // 2-16
-byte NET_ID = 0x00;              // Unique ID number [0-F] hex format
 int EnableSerialDebug     = 0;
 long FreneticModeTimer ;
 #define HTTP_SERVER_PORT  80     // Web server port
-int IncomingSwitchUdpPort;
-#define ShiftOut                 // Enable ShiftOut register
-#define UdpAnswer                // Send UDP answer confirm packet
-int BroadcastPort;               // destination broadcast packet port
-// bool EnableGroupPrefix = 0;      // enable multi controller control
-// bool EnableGroupButton = 0;      // group to one from
-// unsigned int GroupButton[8]={1,2,3,4,5,6,7,8};
-byte DetectedRemoteSw[16][4];
-unsigned int DetectedRemoteSwPort[16];
 
 const int SERIAL_BAUDRATE = 115200; // serial debug baudrate
 int SERIAL1_BAUDRATE; // serial1 to IP baudrate
@@ -239,9 +243,8 @@ int i = 0;
 #if defined(M_DNS) && defined(ETHERNET)
   #include <ESPmDNS.h>
 #endif
-#include <WiFiUdp.h>
 #include "EEPROM.h"
-#define EEPROM_SIZE 405   /* up to 512
+#define EEPROM_SIZE 470   /* up to 512
 0|Byte    1|128
 1|Char    1|A
 2|UChar   1|255
@@ -257,8 +260,8 @@ int i = 0;
 43|Double  8|123456789.12345679
 51|Bool    1|1
 
-0    -listen source
-1    -net ID
+0    - (free, was: listen source)
+1    - (free, was: net ID)
 2-3  - TempCal Short
 4    - HWREVpcb UChar
 5    - mmInPulse Short
@@ -266,12 +269,12 @@ int i = 0;
 -13
 14-17 - SERIAL1_BAUDRATE
 18-21 - SerialServerIPport
-22-25 - IncomingSwitchUdpPort
-26-29 - RebootWatchdog
-30-33 - OutputWatchdog
-34    - Bank0 storage
-35    - Bank1 storage
-36    - Bank2 storage
+22-25 - (free, was: IncomingSwitchUdpPort)
+26-29 - (free, was: RebootWatchdog)
+30-33 - (free, was: OutputWatchdog)
+34    - (free, was: Bank0 storage)
+35    - (free, was: Bank1 storage)
+36    - (free, was: Bank2 storage)
 37-40 - Authorised telnet client IP
 41-140 - Authorised telnet client key
 141-160 - YOUR_CALL
@@ -294,15 +297,14 @@ int i = 0;
 368   - RainCount day-of-month (byte, 1-31; 255=unset)
 369-372 - RainCount (int 4) - persisted so a reboot does not lose today's rain
 373-404 - 32 char windy.com public Station ID (e.g. pws-f06ea43a) for the web-page link
+405-468 - 64 char web Basic-auth password (0xff/0x00 terminated, empty = auth OFF)
+469     - WebAuthEnabled (1=on, set automatically when password is non-empty)
 
 !! Increment EEPROM_SIZE #define !!
 
 */
 int Altitude = 0;
 bool needEEPROMcommit = false;
-unsigned int RebootWatchdog;
-unsigned int OutputWatchdog;
-unsigned long WatchdogTimer=0;
 
 #if defined(WINDY)
   // #include <HTTPClient.h>
@@ -353,31 +355,17 @@ unsigned long WatchdogTimer=0;
   #endif
 #endif
 
-#if defined(AJAX)
-  #include <WebServer.h>
-  #include "index.h"  //Web page header file
-  #include "index-cal.h"  //Web page header file
-  WebServer ajaxserver(HTTP_SERVER_PORT+9);
-#endif
-
-WiFiServer server1(HTTP_SERVER_PORT);
-WiFiServer server2(HTTP_SERVER_PORT+8);
+#include <WebServer.h>
+WebServer webserver(HTTP_SERVER_PORT);   // :80 - new web UI: root dashboard, /setup, /api/*, static SPIFFS files
 bool DHCP_ENABLE = 1;
 // Client variables
 char linebuf[80];
 int charcount=0;
 //Are we currently connected?
 boolean connected = false;
-//The udp library class
-WiFiUDP UdpCommand;
 uint8_t buffer[50] = "";
-unsigned char packetBuffer[10];
-int UDPpacketSize;
-byte TxUdpBuffer[8];
 #include <ETH.h>
 static bool eth_connected = false;
-IPAddress RemoteSwIP(0, 0, 0, 0);         // remote UDP IP switch - set from UDP DetectRemote array
-int RemoteSwPort         = 0;             // remote UDP IP switch port
 String HTTP_req;
 #if defined(EnableOTA)
   #include <ESPmDNS.h>
@@ -386,8 +374,11 @@ String HTTP_req;
 #if defined(OTAWEB)
   #include <AsyncTCP.h>
   #include <ESPAsyncWebServer.h>
-  #include <AsyncElegantOTA.h>
+  #include "src/AsyncElegantOTA_IPR/AsyncElegantOTA_IPR.h"   // vendored OTA: firmware + filesystem (SPIFFS) upload
   AsyncWebServer OTAserver(82);
+  #define WEB_AUTH_USER "admin"          // fixed Basic-auth user for OTA + /setup writes
+  bool WebAuthEnabled = false;           // enabled when WebAuthPassword is set (phase 5)
+  String WebAuthPassword = "";           // stored in EEPROM (phase 5); empty = auth OFF
 #endif
 
 #define MQTT               // Enable MQTT debug
@@ -431,7 +422,6 @@ const int ShiftInLatchPin = 4;
 const int ShiftInClockPin = 5;
 bool rxShiftInRead;
 
-byte ShiftOutByte[3];
 // https://randomnerdtutorials.com/esp32-i2c-communication-arduino-ide/
 #include <Wire.h>
 #define I2C_SDA 33
@@ -530,6 +520,8 @@ const long mapping[MappingRow][2] = { // ms > m/s
 // #define ETH_PHY_POWER 12
 // #include "FS.h"
 // #include "SD_MMC.h"
+#include "SPIFFS.h"                  // web pages live here (gzipped), uploaded via OTA filesystem image
+bool FsMounted = false;             // true after a successful SPIFFS.begin()
 
 // ntp
 #include "time.h"
@@ -578,6 +570,7 @@ String AprsCoordinates;
   // OneWire oneWire(oneWireBus);
   // DallasTemperature sensors(&oneWire);
   bool ExtTemp = true;
+  bool ExtTempValid = false;   // last DS18B20 read succeeded; kept across fast cache refreshes
 
   // Include the libraries we need
   #include <OneWire.h>
@@ -623,7 +616,9 @@ void EEPROMcommit();
 void Watchdog();
 void RainCountStore();
 void RainCountRestore();
-void GetValue();
+void GetValue(bool readSlow = true);   // readSlow=false: fast web-cache refresh (skip DS18B20, no accumulator reset)
+unsigned long LiveCacheTimer = 0;      // drives the frequent dashboard cache refresh
+const unsigned long LiveCacheInterval = 15000;  // ms between fast cache refreshes
 void MqttPubValue();
 void check_radio();
 void GetHttpsWindy();
@@ -646,12 +641,7 @@ void Prn(int OUT, int LN, String STR);
 void ListCommands(int OUT);
 float RainPulseToMM(int PULSE);
 char RandomChar();
-byte IdPrefix(byte ID);
-byte IdSufix(byte ID);
-byte AsciiToHex(int ASCII);
 String getValue(String data, char separator, int index);
-void http1();
-void http2();
 void EthEvent(WiFiEvent_t event);
 void Mqtt();
 bool mqttReconnect();
@@ -675,27 +665,20 @@ void appendFile(fs::FS &fs, const char * path, const char * message);
 void renameFile(fs::FS &fs, const char * path1, const char * path2);
 void deleteFile(fs::FS &fs, const char * path);
 void testFileIO(fs::FS &fs, const char * path);
-void handleSet();
-void handleCal();
-void handlePostStop();
-void handleRoot();
-void handleADC();
-void handleAZ();
-void handleFrontAZ();
-void handleAZadc();
-void handleStat();
-void handleStart();
-void handleMax();
-void handleAnt();
-void handleAntName();
-void handleMapUrl();
-void handleEndstop();
-void handleEndstopLowZone();
-void handleEndstopHighZone();
-void handleCwraw();
-void handleCcwraw();
-void handleMAC();
-void handleUptime();
+void handleRoot();                       // GET / - meteo dashboard (SPIFFS index.html, else PROGMEM fallback)
+void handleStatic();                     // serve any other SPIFFS file (gzip-aware), else 404
+void handleApiLive();                    // GET /api/live - cached meteo data as JSON (root polls this)
+void handleApiWallCfg();                 // GET /api/wallcfg - broker ws URI + topic for the MQTT wall page
+void handleSetupPage();                  // GET /setup - the settings page (auth-gated so the browser prompts)
+void handleApiStatus();                  // GET /api/status - full sensor + raw debug dump for Status tab
+void handleApiDebug();                   // GET /api/debug - debug level + recent debug lines (ring buffer)
+void handleApiConfig();                  // GET /api/config - all /setup settings + diagnostics (secrets masked)
+void handleApiConfigSave();              // POST /api/config - apply+persist settings, reboot if a network field changed
+String jsonEsc(const String& s);
+void eepromWriteString(int start, int maxlen, const String& s);
+bool webAuthOK();                        // Basic-auth gate for write/secret endpoints (when enabled)
+String webContentType(const String& path);
+bool streamSpiffsFile(const String& path);
 // ----------------------------------------------------------------------------
 
 void setup() {
@@ -862,18 +845,6 @@ void setup() {
       Serial.println("failed to initialise EEPROM"); delay(1);
     }
   }
-  // 0-listen source
-  // TxUdpBuffer[2] = EEPROM.read(0);
-  // if(TxUdpBuffer[2]=='o'||TxUdpBuffer[2]=='r'||TxUdpBuffer[2]=='m'||TxUdpBuffer[2]=='e'){
-  //   // OK
-  // }else{
-    TxUdpBuffer[2]='n';
-  // }
-
-  // 1-net ID
-      NET_ID = EEPROM.read(1);
-      TxUdpBuffer[0] = NET_ID;
-
   // 2-3 TempCal Short
   if(EEPROM.readByte(2)!=255){
     TempCal = (float)EEPROM.readShort(2)/100.0;
@@ -895,21 +866,6 @@ void setup() {
 
   SERIAL1_BAUDRATE=EEPROM.readInt(14);
   SerialServerIPport=EEPROM.readInt(18);
-  IncomingSwitchUdpPort=EEPROM.readInt(22);
-  BroadcastPort=IncomingSwitchUdpPort;
-  RebootWatchdog=EEPROM.readUInt(26);
-  if(RebootWatchdog>10080){
-    RebootWatchdog=0;
-  }
-  OutputWatchdog=EEPROM.readUInt(30);
-  if(OutputWatchdog>10080){
-    OutputWatchdog=0;
-  }
-  if(RebootWatchdog>0){
-    ShiftOutByte[0]=EEPROM.readByte(34);
-    ShiftOutByte[1]=EEPROM.readByte(35);
-    ShiftOutByte[2]=EEPROM.readByte(36);
-  }
   TelnetServerClientAuth[0]=EEPROM.readByte(37);
   TelnetServerClientAuth[1]=EEPROM.readByte(38);
   TelnetServerClientAuth[2]=EEPROM.readByte(39);
@@ -1028,6 +984,17 @@ void setup() {
     }
   #endif
 
+  // 405-468 web Basic-auth password, 469 enabled flag
+  #if defined(OTAWEB)
+    WebAuthPassword="";
+    for (int i=405; i<469; i++){
+      byte b = EEPROM.read(i);
+      if(b==0xff || b==0x00){ break; }
+      WebAuthPassword += char(b);
+    }
+    WebAuthEnabled = (WebAuthPassword.length() > 0);   // auth follows whether a password is set
+  #endif
+
   #if defined(WIFI)
     if(EnableSerialDebug>0){
       Serial.print("WIFI Connecting to ");
@@ -1075,16 +1042,12 @@ void setup() {
       if (MDNS.begin("wx")) {
         Serial.println("mDNS server run");
         MDNS.addService("http", "tcp", 80);
-        MDNS.addService("http", "tcp", 88);
       } else {
         Serial.println("Error start mDNS server");
       }
     #endif
 
   #endif
-    server1.begin();
-    server2.begin();
-    UdpCommand.begin(IncomingSwitchUdpPort);    // incoming udp port
     // chipid=ESP.getEfuseMac();//The chip ID is essentially its MAC address(length: 6 bytes).
     //   unsigned long long1 = (unsigned long)((chipid & 0xFFFF0000) >> 16 );
     //   unsigned long long2 = (unsigned long)((chipid & 0x0000FFFF));
@@ -1140,11 +1103,26 @@ void setup() {
     ArduinoOTA.begin();
   #endif
 
+  // mount SPIFFS (web pages); do not auto-format on failure so a missing FS is detectable
+  FsMounted = SPIFFS.begin(false);
+  if(FsMounted){
+    Serial.print("SPIFFS mounted: total ");
+    Serial.print(SPIFFS.totalBytes());
+    Serial.print(" B, used ");
+    Serial.print(SPIFFS.usedBytes());
+    Serial.println(" B");
+  }else{
+    Serial.println("SPIFFS mount failed - upload spiffs.bin via OTA filesystem image");
+  }
+
   #if defined(OTAWEB)
     OTAserver.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if(WebAuthEnabled && !request->authenticate(WEB_AUTH_USER, WebAuthPassword.c_str())){
+          return request->requestAuthentication();
+        }
         request->send(200, "text/plain", "PSE QSY to /update");
     });
-    AsyncElegantOTA.begin(&OTAserver);    // Start ElegantOTA
+    AsyncElegantOTA_IPR.begin(&OTAserver, WEB_AUTH_USER, WebAuthPassword.c_str(), &WebAuthEnabled, REV);    // firmware + filesystem upload
     OTAserver.begin();
   #endif
 
@@ -1226,54 +1204,38 @@ void setup() {
    RainCountRestore();   // restore today's rain counter from EEPROM (survive reboot)
    Interrupts(true);
 
-   #if defined(AJAX)
-     // ajaxserver.on("/",HTTP_POST, handlePostRot);
-     ajaxserver.on("/", handleRoot);      //This is display page
-     ajaxserver.on("/set", handleSet);
-     ajaxserver.on("/cal", handleCal);
-     // ajaxserver.on("/readADC", handleADC);//To get update of ADC Value only
-     // ajaxserver.on("/readAZ", handleAZ);
-     // ajaxserver.on("/readFrontAZ", handleFrontAZ);
-     // ajaxserver.on("/readAZadc", handleAZadc);
-     // ajaxserver.on("/readStat", handleStat);
-     // ajaxserver.on("/readStart", handleStart);
-     // ajaxserver.on("/readMax", handleMax);
-     // ajaxserver.on("/readAnt", handleAnt);
-     // ajaxserver.on("/readAntName", handleAntName);
-     // ajaxserver.on("/readMapUrl", handleMapUrl);
-     // ajaxserver.on("/readEndstop", handleEndstop);
-     // ajaxserver.on("/readEndstopLowZone", handleEndstopLowZone);
-     // ajaxserver.on("/readEndstopHighZone", handleEndstopHighZone);
-     // ajaxserver.on("/readCwraw", handleCwraw);
-     // ajaxserver.on("/readCcwraw", handleCcwraw);
-     // ajaxserver.on("/readMAC", handleMAC);
-     // ajaxserver.on("/readUptime", handleUptime);
-     // ajaxserver.on("/cal/readAZ", handleAZ);
-     ajaxserver.begin();                  //Start server
-     Serial.println("HTTP ajax server started");
-   #endif
+   // new web UI on :80. Authorization header must be collected so webserver.authenticate() works.
+   {
+     static const char* webAuthHeaders[] = { "Authorization" };
+     webserver.collectHeaders(webAuthHeaders, 1);
+   }
+   webserver.on("/", HTTP_GET, handleRoot);          // responsive meteo dashboard (SPIFFS or PROGMEM fallback)
+   webserver.on("/api/live", HTTP_GET, handleApiLive); // cached meteo JSON for the dashboard
+   webserver.on("/api/wallcfg", HTTP_GET, handleApiWallCfg); // broker ws URI + topic for /wall
+   webserver.on("/setup", HTTP_GET, handleSetupPage);        // settings page (auth-gated)
+   webserver.on("/api/config", HTTP_GET, handleApiConfig);   // /setup form data + diagnostics
+   webserver.on("/api/config", HTTP_POST, handleApiConfigSave); // /setup global Save
+   webserver.on("/api/status", HTTP_GET, handleApiStatus);   // Status tab: full sensor + raw debug dump
+   webserver.on("/api/debug", HTTP_GET, handleApiDebug);     // Debug tab: level + recent log lines
+   webserver.onNotFound(handleStatic);               // static SPIFFS files (gzip-aware), else 404
+   webserver.begin();
+   Serial.println("HTTP web server started on :80");
 
 }
 
 //-------------------------------------------------------------------------------------------------------
 
 void loop() {
-  http1();
-  http2();
+  webserver.handleClient();
   Mqtt();
   CLI();
   Telnet();
   Watchdog();
 
-  #if defined(AJAX)
-    ajaxserver.handleClient();
-  #endif
-
   // check_radio();
 
   // blank loop 80us
   // SerialToIp();
-  // RX_UDP();
   // if(millis()-TimerTemp > 60000){
   //   String StringUtc1 = UtcTime(1);
   //   // MqttPubString("tmp/utc", StringUtc1, false);
@@ -1297,7 +1259,7 @@ void loop() {
    //     request->send(200, "text/plain", "ok");
    //     Serial.println(request->client()->remoteIP());
    // });
-   AsyncElegantOTA.loop();
+   AsyncElegantOTA_IPR.loop();
   #endif
 }
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
@@ -1473,37 +1435,6 @@ void Watchdog(){
   //   MqttPubString("SpeedAlert-az", String(WindDir), false);
   // }
 
-  if(RebootWatchdog > 0 && millis()-WatchdogTimer > RebootWatchdog*60000){
-    Prn(3, 1,"** Activate reboot watchdog - IP switch will be restarted **");
-    EEPROM.writeByte(34, ShiftOutByte[0]);
-    EEPROM.writeByte(35, ShiftOutByte[1]);
-    EEPROM.writeByte(36, ShiftOutByte[2]);
-    EEPROMcommit();
-    delay(1000);
-    TelnetServerClients[0].stop();
-    ESP.restart();
-  }
-
-  if(OutputWatchdog > 0 && millis()-WatchdogTimer > OutputWatchdog*60000 && OutputWatchdog < 123456){
-    Prn(3, 1,"** Activate clear output watchdog **");
-    ShiftOutByte[0]=0x00;
-    ShiftOutByte[1]=0x00;
-    ShiftOutByte[2]=0x00;
-    EEPROM.writeByte(34, ShiftOutByte[0]);
-    EEPROM.writeByte(35, ShiftOutByte[1]);
-    EEPROM.writeByte(36, ShiftOutByte[2]);
-    EEPROMcommit();
-    #if defined(ShiftOut)
-      // digitalWrite(ShiftOutLatchPin, LOW);  // když dáme latchPin na LOW mužeme do registru poslat data
-      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, 0x01);
-      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[2]);
-      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[1]);
-      // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[0]);
-      // digitalWrite(ShiftOutLatchPin, HIGH);    // jakmile dáme latchPin na HIGH data se objeví na výstupu
-    #endif
-    // deactivate
-    OutputWatchdog=123456;
-  }
 
   // if(millis()-HeartBeatTimer[0]>HeartBeatTimer[1]){
   //   MqttPubString("HeartBeat", String(UtcTime(1)), false);
@@ -1578,12 +1509,13 @@ void Watchdog(){
     #endif
   }
 
-  // TX repeat time
+  // Publish cycle (every MeasureTimer[1], default 5 min): full measurement incl. DS18B20, then
+  // publish to MQTT/APRS/Windy, then reset the wind accumulators for the next period.
   if(millis()-MeasureTimer[0]>MeasureTimer[1] && eth_connected==true && mqttClient.connected()==true){
     Interrupts(false);
     // digitalWrite(EnablePin,1);
 
-    GetValue();
+    GetValue(true);
     MqttPubValue();
     AprsWxIgate();
     GetHttpsWindy();
@@ -1591,10 +1523,22 @@ void Watchdog(){
     RainCountStore();   // persist today's rain counter (only writes EEPROM when it changed)
     MqttPubString("FreeHeap", String(ESP.getFreeHeap()), false);   // monitor heap trend (leak/fragmentation)
 
+    // reset wind accumulators AFTER publishing so the period average/max span the whole interval
+    RpmAverage[0]=0;
+    RpmAverage[1]=0;
+    PeriodMinRpmPulse=987654321;
     WindSpeedMaxPeriodUTC="";
     MeasureTimer[0]=millis();
+    LiveCacheTimer=millis();   // fresh cache, no need for a fast refresh right after a full one
     Interrupts(true);
     // digitalWrite(EnablePin,0);
+  }
+
+  // Fast cache refresh for the web dashboard: samples quick sensors only (no DS18B20, interrupts
+  // stay on), independent of MQTT, so /api/live reflects current wind/temp/humidity within seconds.
+  if(millis()-LiveCacheTimer > LiveCacheInterval && eth_connected==true){
+    GetValue(false);
+    LiveCacheTimer=millis();
   }
 
   if(!TelnetServerClients[0].connected() && FirstListCommands==false){
@@ -1606,7 +1550,13 @@ void Watchdog(){
 
 //-------------------------------------------------------------------------------------------------------
 
-void GetValue(){
+// readSlow=true  : full measurement (incl. DS18B20 OneWire read); call from the 5-min publish cycle
+//                  with interrupts disabled. Does NOT reset wind accumulators (the caller does that
+//                  after publishing, so averages span the whole period).
+// readSlow=false : fast refresh for the web dashboard - samples the quick sensors (HTU/BMP/wind)
+//                  only, keeps the last DS18B20 temperature, leaves interrupts running, so it can
+//                  run every few seconds without losing wind pulses or shrinking the publish period.
+void GetValue(bool readSlow){
 
   if(UtcTime(2)!=RainCountDayOfMonth){
     RainCount=0;
@@ -1626,7 +1576,7 @@ void GetValue(){
     TemperatureCelsiusBMP280 = 0;
     HumidityRelPercentHTU21D = 0;
     DewPointCelsiusHTU21D = 0;
-    TemperatureCelsiusDS18B20 = 0;
+    // TemperatureCelsiusDS18B20 kept across fast refreshes (only re-read when readSlow)
 
   Azimuth();
   RainTodayMM = RainPulseToMM(RainCount);
@@ -1636,17 +1586,17 @@ void GetValue(){
   }else{
     WindSpeedMaxPeriodMPS = 0;
   }
-  // read each sensor only once per cycle
-  bool ds18b20valid = false;
   float htuTemp = 0;
 
   #if defined(DS18B20)
-    if(ExtTemp==true){
+    if(ExtTemp==true && readSlow==true){
       sensors.requestTemperatures();
       float dsTemp = sensors.getTempC(insideThermometer);
       if(dsTemp != DEVICE_DISCONNECTED_C){   // -127 = sensor disconnected
         TemperatureCelsiusDS18B20 = dsTemp;
-        ds18b20valid = true;
+        ExtTempValid = true;
+      }else{
+        ExtTempValid = false;
       }
     }
   #endif
@@ -1665,7 +1615,7 @@ void GetValue(){
       TemperatureCelsiusBMP280 = bmp.readTemperature();
       // reference temperature for sea-level pressure conversion (in Fahrenheit)
       double refTempF;
-      if(ds18b20valid==true){
+      if(ExtTempValid==true){
         refTempF = (TemperatureCelsiusDS18B20+TempCal)*1.8+32;
       }else{
         refTempF = htuTemp*1.8+32;   // fallback to HTU21D (or 0 if not present)
@@ -1676,7 +1626,7 @@ void GetValue(){
     }
   #endif
   // DS18B20 is the master temperature source when available
-  if(ds18b20valid==true){
+  if(ExtTempValid==true){
     TemperatureCelsius = TemperatureCelsiusDS18B20;
   }
 
@@ -1724,10 +1674,8 @@ void GetValue(){
     }
   #endif
 
-  RpmAverage[0]=0;
-  RpmAverage[1]=0;
-  PeriodMinRpmPulse=987654321;
-  // WindSpeedMaxPeriodUTC="";
+  // Wind accumulators (period average + period max) are reset by the publish cycle AFTER publishing,
+  // not here, so they span the full publish period regardless of how often GetValue() samples.
 
 }
 //-------------------------------------------------------------------------------------------------------
@@ -2302,6 +2250,29 @@ void CLI(){
         Prn(OUT, 1,"  Erase aborted");
       }
 
+    #if defined(OTAWEB)
+    // P - clear web Basic-auth password / disable auth (recovery channel: web /setup is locked
+    // behind this very password, so this lives here in the serial/telnet menu instead)
+    }else if(incomingByte==80){
+      if(WebAuthPassword.length()==0){
+        Prn(OUT, 1,"  Web auth already OFF (no password set)");
+      }else{
+        Prn(OUT, 1,"  Clear web password / disable auth? (y/n)");
+        EnterChar(OUT);
+        if(incomingByte==89 || incomingByte==121){
+          WebAuthPassword=""; WebAuthEnabled=false;
+          eepromWriteString(405, 64, ""); EEPROM.write(469, 0);
+          EEPROMcommit();
+          Prn(OUT, 1,"  Web password cleared, auth OFF | ** device will be restarted **");
+          delay(1000);
+          TelnetServerClients[0].stop();
+          ESP.restart();
+        }else{
+          Prn(OUT, 1,"  Aborted");
+        }
+      }
+    #endif
+
     // .
     }else if(incomingByte==46){
       Prn(OUT, 1,"Reset timer and sent measure");
@@ -2337,15 +2308,7 @@ void CLI(){
 
     // @
     }else if(incomingByte==64){
-      Prn(OUT, 1,"** IP switch will be restarted **");
-      if(RebootWatchdog > 0){
-        Prn(OUT, 1,"   Activate reboot watchdog - store outputs to EEPROM...");
-        EEPROM.writeByte(34, ShiftOutByte[0]);
-        EEPROM.writeByte(35, ShiftOutByte[1]);
-        EEPROM.writeByte(36, ShiftOutByte[2]);
-        EEPROMcommit();
-        delay(1000);
-      }
+      Prn(OUT, 1,"** Device will be restarted **");
       TelnetServerClients[0].stop();
       ESP.restart();
 
@@ -2554,8 +2517,8 @@ void CLI(){
 
       // I - windy.com public Station ID (for the web-page link)
       }else if(incomingByte==73){
-        Prn(OUT, 1,"  Find it on https://stations.windy.com (public URL windy.com/station/<ID>).");
-        Prn(OUT, 0,"  Enter windy Station ID, e.g. pws-f06ea43a (empty = remove) and press [");
+        Prn(OUT, 1,"  Find it on https://stations.windy.com (public URL windy.com/station/pws-<ID>).");
+        Prn(OUT, 0,"  Enter windy Station ID without pws- prefix, e.g. f052c6e5 (empty = remove) and press [");
         if(TelnetAuthorized==true){
           Prn(OUT, 1,"enter]");
         }else{
@@ -2579,7 +2542,7 @@ void CLI(){
         if(WindyStationId.length()==0){
           Prn(OUT, 1," windy Station ID removed (web link hidden)");
         }else{
-          Prn(OUT, 1," windy Station ID saved | https://www.windy.com/station/"+WindyStationId);
+          Prn(OUT, 1," windy Station ID saved | https://www.windy.com/station/pws-"+WindyStationId);
         }
       #endif
 
@@ -2996,7 +2959,36 @@ void EnterIntOld(int OUT){
 }
 
 //-------------------------------------------------------------------------------------------------------
+// --- debug ring buffer (web Debug tab) -------------------------------------------------------
+// Captures Prn() output while EnableSerialDebug>0 into a small circular line buffer that
+// /api/debug serves, so the serial debug stream is visible in the browser without a cable.
+#define DBG_RING_LINES 50
+#define DBG_RING_WIDTH 100
+char dbgRing[DBG_RING_LINES][DBG_RING_WIDTH];
+int  dbgRingHead = 0;     // next slot to write
+int  dbgRingCount = 0;    // valid lines so far (<= DBG_RING_LINES)
+char dbgCur[DBG_RING_WIDTH];
+int  dbgCurPos = 0;       // build-up of the current (not yet newline-terminated) line
+
+void dbgCapture(const String& s, int ln){
+  if(EnableSerialDebug==0) return;
+  for(unsigned int i=0;i<s.length();i++){
+    char c=s[i];
+    if(c=='\r'||c=='\n') continue;
+    if(dbgCurPos < DBG_RING_WIDTH-1) dbgCur[dbgCurPos++]=c;
+  }
+  if(ln==1){
+    dbgCur[dbgCurPos]='\0';
+    strncpy(dbgRing[dbgRingHead], dbgCur, DBG_RING_WIDTH);
+    dbgRing[dbgRingHead][DBG_RING_WIDTH-1]='\0';
+    dbgRingHead=(dbgRingHead+1)%DBG_RING_LINES;
+    if(dbgRingCount<DBG_RING_LINES) dbgRingCount++;
+    dbgCurPos=0;
+  }
+}
+
 void Prn(int OUT, int LN, String STR){
+  dbgCapture(STR, LN);
   if(OUT==3){
     if(TelnetAuthorized==true){
       OUT=1;
@@ -3117,17 +3109,6 @@ void ListCommands(int OUT){
       Prn(OUT, 1," days");
     }
 
-    if(RebootWatchdog > 0){
-      Prn(OUT, 0,"> Reboot countdown in ");
-      Prn(OUT, 0, String(RebootWatchdog-((millis()-WatchdogTimer)/60000)) );
-      Prn(OUT, 1, " minutes");
-    }
-    if(OutputWatchdog > 0 && OutputWatchdog<123456){
-      Prn(OUT, 0,"> Clear output countdown in ");
-      Prn(OUT, 0, String(OutputWatchdog-((millis()-WatchdogTimer)/60000)) );
-      Prn(OUT, 1," minutes");
-    }
-
     Prn(OUT, 0,"  MqttSubscribe: "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT)+"/");
       String topic = String(YOUR_CALL) + "/WX/sub";
       const char *cstr = topic.c_str();
@@ -3144,6 +3125,21 @@ void ListCommands(int OUT){
     Prn(OUT, 0," sw | ");
     Prn(OUT, 0, String(HWREVpcb));
     Prn(OUT, 1," pcb");
+
+    #if defined(OTAWEB)
+      Prn(OUT, 0,"  Web setup http://");
+      #if defined(ETHERNET)
+        Prn(OUT, 0, String(ETH.localIP()[0])+"."+String(ETH.localIP()[1])+"."+String(ETH.localIP()[2])+"."+String(ETH.localIP()[3]));
+      #endif
+      Prn(OUT, 1,"/setup");
+      if(WebAuthEnabled){
+        Prn(OUT, 0,"  Web auth ON | user "+String(WEB_AUTH_USER)+" | password ");
+        Prn(OUT, 1, WebAuthPassword);
+        Prn(OUT, 1,"      P  clear web password / disable auth (recovery)");
+      }else{
+        Prn(OUT, 1,"  Web auth OFF (set a web password in /setup to enable)");
+      }
+    #endif
 
 
     Prn(OUT, 1,"-----------------  Sensors  -----------------");
@@ -3295,32 +3291,6 @@ void ListCommands(int OUT){
     // #endif
     // Prn(OUT, 0,"      a  speed Alert [");
     // Prn(OUT, 1, String(PulseToMetterBySecond(SpeedAlertLimit_ms))+" m/s] - not implemented");
-    if(TxUdpBuffer[2]!='n'){
-      Prn(OUT, 0,"      w  inactivity reboot watchdog ");
-      if(RebootWatchdog>0){
-        Prn(OUT, 0,"after [");
-        Prn(OUT, 0, String(RebootWatchdog) );
-        Prn(OUT, 1,"] minutes");
-      }else{
-        Prn(OUT, 1,"[disable]");
-      }
-      Prn(OUT, 0,"      W  inactivity clear output watchdog ");
-      if(OutputWatchdog>0){
-        Prn(OUT, 0,"after [");
-        Prn(OUT, 0, String(OutputWatchdog) );
-        Prn(OUT, 1,"] minutes");
-      }else{
-        Prn(OUT, 1,"[disable]");
-      }
-      Prn(OUT, 0,"      <  change Switch incoming UDP port [");
-      Prn(OUT, 0, String(IncomingSwitchUdpPort) );
-      Prn(OUT, 0,"]");
-      if(IncomingSwitchUdpPort!=88){
-        Prn(OUT, 0,"<-- WARNING! default is 88");
-      }
-      Prn(OUT, 1,"");
-    }
-
     Prn(OUT, 1, "      +  change MQTT broker IP | "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT));
     #if defined(WINDY)
       Prn(OUT, 0,"      K  windy.com API key [");
@@ -3416,40 +3386,6 @@ char RandomChar(){
     return char(R);
 }
 
-// http://www.catonmat.net/blog/low-level-bit-hacks-you-absolutely-must-know/
-//-------------------------------------------------------------------------------------------------------
-
-byte IdPrefix(byte ID){
-  bitClear(ID, 0);  // ->
-  bitClear(ID, 1);
-  bitClear(ID, 2);
-  bitClear(ID, 3);
-  ID = ID >> 4;
-  return(ID);
-}
-
-//---------------------------------------------------------------------------------------------------------
-
-byte IdSufix(byte ID){
-  bitClear(ID, 4);
-  bitClear(ID, 5);
-  bitClear(ID, 6);
-  bitClear(ID, 7);  // <-
-  return(ID);
-}
-
-//-------------------------------------------------------------------------------------------------------
-byte AsciiToHex(int ASCII){
-  if(ASCII>=48 && ASCII<=57){
-    return(ASCII-48);
-  }else if(ASCII>=97 && ASCII<=102){
-    return(ASCII-87);
-  }else{
-    return(255);
-  }
-}
-//-------------------------------------------------------------------------------------------------------
-
 String getValue(String data, char separator, int index)
 {
   int found = 0;
@@ -3467,741 +3403,413 @@ String getValue(String data, char separator, int index)
 }
 
 //-------------------------------------------------------------------------------------------------------
-/*
-ID FROM TO : BROADCAST ;
-ID FROM TO : CONFIRM ;
-ID FROM TO : A B C ;
-ID FROM TO : A B C ;
+// ===== Web UI (:80) =====================================================================
+// Pages live gzipped in SPIFFS (data/), uploaded via OTA filesystem image. If SPIFFS is
+// missing (firmware flashed but FS not yet uploaded) a minimal PROGMEM page is served so
+// the device never looks bricked.
 
-TX  0ms:b;
-RX  0sm:c;
-TX  0ms:123;
-RX  0sm:123;
-*/
+static const char ROOT_FALLBACK_HTML[] PROGMEM = R"rawliteral(<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WX</title><style>body{font-family:sans-serif;background:#333;color:#ddd;text-align:center;padding:2em}
+a.btn{display:inline-block;margin:1em .5em;padding:.7em 1.4em;background:#06c;color:#fff;text-decoration:none;border-radius:6px}</style>
+</head><body>
+<h2>WX station</h2>
+<p>Web pages are not in flash yet. Upload <code>spiffs.bin</code> via the OTA <b>Filesystem</b> image.</p>
+<p><a class="btn" href="http://:82/update">OTA</a></p>
+</body></html>)rawliteral";
 
-// void RX_UDP(){
-//   UDPpacketSize = UdpCommand.parsePacket();    // if there's data available, read a packet
-//   if (UDPpacketSize){
-//     UdpCommand.read(packetBuffer, 10);      // read the packet into packetBufffer
-//     // Print RAW
-//     if(EnableSerialDebug>0){
-//       Serial.println();
-//       Serial.print("RXraw [");
-//       Serial.print(packetBuffer[0], HEX);
-//       for(int i=1; i<8; i++){
-//         Serial.print(char(packetBuffer[i]));
-//       }
-//       Serial.print(F("] "));
-//       Serial.print(UdpCommand.remoteIP());
-//       Serial.print(":");
-//       Serial.print(UdpCommand.remotePort());
-//       Serial.println();
-//     }
-//
-//     // ID-FROM-TO filter
-//     if(
-//       (EnableGroupPrefix==false
-//       && String(packetBuffer[0], DEC).toInt()==NET_ID
-//       && packetBuffer[1]==TxUdpBuffer[2]  // FROM Switch
-//       && packetBuffer[2]== 's'  // TO
-//       && packetBuffer[3]== B00000000
-//       // && packetBuffer[3]== ':'
-//       && packetBuffer[7]== ';')
-//       ||
-//       (EnableGroupPrefix==true
-//       && IdSufix(packetBuffer[0])==IdSufix(NET_ID)
-//       && packetBuffer[1]==TxUdpBuffer[2]  // FROM Switch
-//       && packetBuffer[2]== 's'  // TO
-//       && packetBuffer[3]== B00000000
-//       // && packetBuffer[3]== ':'
-//       && packetBuffer[7]== ';')
-//     ){
-//
-//       if( EnableGroupPrefix==true && (
-//         DetectedRemoteSwPort [IdPrefix(packetBuffer[0])] == 0
-//         || (packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o')
-//         || (packetBuffer[4]== 'c' && packetBuffer[5]== 'f' && packetBuffer[6]== 'm')
-//         )
-//       ){
-//         IPAddress TmpAddr = UdpCommand.remoteIP();
-//         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [0]=TmpAddr[0];     // Switch IP addres storage to array
-//         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [1]=TmpAddr[1];
-//         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [2]=TmpAddr[2];
-//         DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [3]=TmpAddr[3];
-//         DetectedRemoteSwPort [hexToDecBy4bit(IdPrefix(packetBuffer[0]))]=UdpCommand.remotePort();
-//         if(EnableSerialDebug>0){
-//           Serial.print("Detect controller ID ");
-//           Serial.print(IdPrefix(packetBuffer[0]), HEX);
-//           Serial.print(" on IP ");
-//           Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [0]);
-//           Serial.print(".");
-//           Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [1]);
-//           Serial.print(".");
-//           Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [2]);
-//           Serial.print(".");
-//           Serial.print(DetectedRemoteSw [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] [3]);
-//           Serial.print(":");
-//           Serial.println(DetectedRemoteSwPort [hexToDecBy4bit(IdPrefix(packetBuffer[0]))] );
-//         }
-//         if(TxUdpBuffer[2] == 'm'){
-//           TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 1);
-//         }
-//       }
-//
-//       // RX Broadcast / CFM
-//       if((packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o')
-//         || (packetBuffer[4]== 'c' && packetBuffer[5]== 'f' && packetBuffer[6]== 'm')
-//         ){
-//         if(EnableSerialDebug>0){
-//           Serial.print("RX [");
-//           Serial.print(packetBuffer[0], HEX);
-//           for(int i=1; i<8; i++){
-//             Serial.print(char(packetBuffer[i]));
-//           }
-//           Serial.print(F("] "));
-//           Serial.print(UdpCommand.remoteIP());
-//           Serial.print(":");
-//           Serial.println(UdpCommand.remotePort());
-//         }
-//         if(packetBuffer[4]== 'b' && packetBuffer[5]== 'r' && packetBuffer[6]== 'o'){
-//           TxUDP('s', packetBuffer[2], 'c', 'f', 'm', 1);    // 0=broadcast, 1= direct to RX IP
-//           if(TxUdpBuffer[2] == 'm'){
-//             TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 1);
-//           }
-//         }
-//
-//       // RX DATA
-//       }else{
-//         if(EnableGroupButton==true){
-//           CheckGroup();
-//         }else{
-//           ShiftOutByte[0] = String(packetBuffer[4], DEC).toInt();    // Bank0
-//         }
-//         ShiftOutByte[1] = String(packetBuffer[5], DEC).toInt();    // Bank1
-//         ShiftOutByte[2] = String(packetBuffer[6], DEC).toInt();    // Bank2
-//
-//         // SHIFT OUT
-//         #if defined(ShiftOut)
-//           // digitalWrite(ShiftOutLatchPin, LOW);  // když dáme latchPin na LOW mužeme do registru poslat data
-//           // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[2]);
-//           // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[1]);
-//           // shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte[0]);
-//           // digitalWrite(ShiftOutLatchPin, HIGH);    // jakmile dáme latchPin na HIGH data se objeví na výstupu
-//           if(EnableSerialDebug>0){
-//             Serial.println("ShiftOut");
-//           }
-//         #endif
-//
-//         if(EnableSerialDebug>0){
-//           // Serial.println();
-//           Serial.print(F("RX ["));
-//           Serial.print(packetBuffer[0], HEX);
-//           for(int i=1; i<4; i++){
-//             Serial.print(char(packetBuffer[i]));
-//           }
-//           Serial.print((byte)packetBuffer[4], BIN);
-//           Serial.print(F("|"));
-//           Serial.print((byte)packetBuffer[5], BIN);
-//           Serial.print(F("|"));
-//           Serial.print((byte)packetBuffer[6], BIN);
-//           Serial.print(F(";] "));
-//           Serial.print(UdpCommand.remoteIP());
-//           Serial.print(F(":"));
-//           Serial.println(UdpCommand.remotePort());
-//         }
-//         if(UdpCommand.remotePort() != DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))] && EnableGroupPrefix==true){
-//           // if(EnableSerialDebug>0){
-//             Serial.print(F("** Change ip-port ID "));
-//             Serial.print(IdPrefix(packetBuffer[0]), HEX);
-//             Serial.print(F(" (OLD-"));
-//             Serial.print(DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))]);
-//             Serial.print(F(" NEW-"));
-//             Serial.print(UdpCommand.remotePort());
-//             Serial.println(F(") **"));
-//           // }
-//           DetectedRemoteSwPort[hexToDecBy4bit(IdPrefix(packetBuffer[0]))]=UdpCommand.remotePort();
-//         }
-//         TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-//       }
-//       WatchdogTimer=millis();
-//       // activate
-//       if(OutputWatchdog==123456){
-//         OutputWatchdog=EEPROM.readUInt(27);
-//       }
-//     } // filtered end
-//     else{
-//       if(EnableSerialDebug>0){
-//         Serial.println(F("   Different NET-ID, or bad packet format"));
-//       }
-//     }
-//     memset(packetBuffer, 0, sizeof(packetBuffer));   // Clear contents of Buffer
-//   } //end IfUdpPacketSice
-// }
-//-------------------------------------------------------------------------------------------------------
-
-// void CheckGroup(){
-//   int ChangeBit=9;
-//   int NumberOfChange=0;
-//   for (int i=0; i<8; i++){
-//     if(bitRead(packetBuffer[4], i)!=bitRead(ShiftOutByte[0], i)){
-//       ChangeBit=i;
-//       NumberOfChange++;
-//     }
-//   }
-//   // Serial.print("ChangeBit|NumberOfChange ");
-//   // Serial.print(ChangeBit+1);
-//   // Serial.print(" ");
-//   // Serial.println(NumberOfChange);
-//
-//   ShiftOutByte[0] = String(packetBuffer[4], DEC).toInt();    // Bank0
-//   if(NumberOfChange==1){
-//     // Serial.println("clearGroup");
-//     NumberOfChange=0;
-//     for (int i=0; i<8; i++){
-//       if(GroupButton[ChangeBit]==GroupButton[i] && ChangeBit!=i){
-//         bitClear(ShiftOutByte[0], i);
-//         NumberOfChange++;
-//         // Serial.print("Bitclear ");
-//         // Serial.println(i);
-//       }
-//     }
-//     if(NumberOfChange>0){
-//       bitSet(ShiftOutByte[0], ChangeBit);
-//     }
-//   }
-// }
-//-------------------------------------------------------------------------------------------------------
-
-unsigned char hexToDecBy4bit(unsigned char hex)
-// convert a character representation of a hexidecimal digit into the actual hexidecimal value
-{
-  if(hex > 0x39) hex -= 7; // adjust for hex letters upper or lower case
-  return(hex & 0xf);
+// Map a file extension to a Content-Type for static SPIFFS serving.
+String webContentType(const String& path){
+  String p = path;
+  if(p.endsWith(".gz")) p = p.substring(0, p.length()-3);   // negotiate on the underlying type
+  if(p.endsWith(".html") || p.endsWith(".htm")) return "text/html";
+  if(p.endsWith(".css"))  return "text/css";
+  if(p.endsWith(".js"))   return "application/javascript";
+  if(p.endsWith(".json")) return "application/json";
+  if(p.endsWith(".svg"))  return "image/svg+xml";
+  if(p.endsWith(".png"))  return "image/png";
+  if(p.endsWith(".ico"))  return "image/x-icon";
+  return "text/plain";
 }
 
-//-------------------------------------------------------------------------------------------------------
+// Stream a SPIFFS file if present, preferring a .gz sibling (sets Content-Encoding: gzip).
+// Returns false if neither <path> nor <path>.gz exists (so caller can fall back / 404).
+bool streamSpiffsFile(const String& path){
+  if(!FsMounted) return false;
+  String gz = path + ".gz";
+  if(SPIFFS.exists(gz)){
+    File f = SPIFFS.open(gz, "r");
+    if(!f) return false;
+    // WebServer::streamFile() auto-adds "Content-Encoding: gzip" because the file name ends in
+    // ".gz" (see core _streamFileCore). Do NOT set it ourselves or the browser sees it twice
+    // and rejects the body ("unsupported content encoding").
+    webserver.streamFile(f, webContentType(path));
+    f.close();
+    return true;
+  }
+  if(SPIFFS.exists(path)){
+    File f = SPIFFS.open(path, "r");
+    if(!f) return false;
+    webserver.streamFile(f, webContentType(path));
+    f.close();
+    return true;
+  }
+  return false;
+}
 
-// void TxUDP(byte FROM, byte TO, byte A, byte B, byte C, int DIRECT){
-//
-//   // TxUdpBuffer[0] = NET_ID;
-//   TxUdpBuffer[1] = FROM;
-//   // TxUdpBuffer[2] = TO;
-//
-//   // if(TxUdpBuffer[2]=='m' && ( EnableGroupPrefix==true || EnableGroupButton==true ) ){
-//   //   TxUdpBuffer[3] = B00101101;           // -  multi control || GroupButton
-//   // }else{
-//   //   TxUdpBuffer[3] = B00111010;           // :
-//   // }
-//
-//   TxUdpBuffer[3] = B00000000;
-//     // multi control
-//     if(TxUdpBuffer[2]=='m' && EnableGroupPrefix==true){
-//       bitSet(TxUdpBuffer[3], 0);
-//     }
-//     // group button
-//     if(TxUdpBuffer[2]=='m' && EnableGroupButton==true){
-//       bitSet(TxUdpBuffer[3], 1);
-//     }
-//
-//   TxUdpBuffer[4] = A;
-//   TxUdpBuffer[5] = B;
-//   TxUdpBuffer[6] = C;
-//   TxUdpBuffer[7] = B00111011;           // ;
-//
-//   // BROADCAST
-//   if(A=='b' && B=='r' && C=='o'){  // b r o
-//     if(TxUdpBuffer[2] == 'm'){
-//       TxUdpBuffer[6] = NumberOfEncoderOutputs;
-//     }
-//     // direct
-//     if(DIRECT==0){
-//       RemoteSwIP = ~ETH.subnetMask() | ETH.gatewayIP();
-//       if(EnableSerialDebug>0){
-//         Serial.print(F("TX broadcast ["));
-//       }
-//     }else{
-//       RemoteSwIP = UdpCommand.remoteIP();
-//       if(EnableSerialDebug>0){
-//         Serial.print(F("TX direct ["));
-//       }
-//     }
-//     UdpCommand.beginPacket(RemoteSwIP, BroadcastPort);
-//
-//   // CFM
-//   }else if(A=='c' && B=='f' && C=='m'){  // cfm
-//       if(TxUdpBuffer[2] == 'm'){
-//         TxUdpBuffer[6] = NumberOfEncoderOutputs;
-//       }
-//       if(EnableSerialDebug>0){
-//         Serial.print(F("TX direct ["));
-//       }
-//       UdpCommand.beginPacket(UdpCommand.remoteIP(), UdpCommand.remotePort());
-//
-//   // DATA
-//   }else{
-//     RemoteSwIP = UdpCommand.remoteIP();
-//     if(EnableSerialDebug>0){
-//       Serial.print(F("TX ["));
-//     }
-//     UdpCommand.beginPacket(RemoteSwIP, UdpCommand.remotePort());
-//   }
-//
-//   // send
-//   if(EnableGroupPrefix==false){
-//     UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
-//     UdpCommand.endPacket();
-//     if(EnableSerialDebug>0){
-//       Serial.print(TxUdpBuffer[0], HEX);
-//       Serial.print(char(TxUdpBuffer[1]));
-//       Serial.print(char(TxUdpBuffer[2]));
-//       Serial.print(F("|"));
-//       Serial.print(TxUdpBuffer[3], BIN);
-//       Serial.print(F("|"));
-//       Serial.print(TxUdpBuffer[4], BIN);
-//       Serial.print(F("|"));
-//       Serial.print(TxUdpBuffer[5], BIN);
-//       Serial.print(F("|"));
-//       Serial.print(TxUdpBuffer[6], BIN);
-//       Serial.print(char(TxUdpBuffer[7]));
-//       Serial.print(F("] "));
-//       Serial.print(RemoteSwIP);
-//       Serial.print(F(":"));
-//       Serial.print(UdpCommand.remotePort());
-//       #if defined(WIFI)
-//         Serial.print(" | dBm: ");
-//         Serial.print(WiFi.RSSI());
-//       #endif
-//       Serial.println();
-//     }
-//
-//   // send EnableGroupPrefix
-//   }else{
-//     // answer to RX ip
-//     TxUdpBuffer[0]=packetBuffer[0];   // NET_ID by RX NET_ID
-//     UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
-//     UdpCommand.endPacket();
-//     if(EnableSerialDebug>0){
-//       Serial.print(TxUdpBuffer[0], HEX);
-//       for (int i=1; i<4; i++){
-//         Serial.print(char(TxUdpBuffer[i]));
-//       }
-//       Serial.print(TxUdpBuffer[4], BIN);
-//       Serial.print(F("|"));
-//       Serial.print(TxUdpBuffer[5], BIN);
-//       Serial.print(F("|"));
-//       Serial.print(TxUdpBuffer[6], BIN);
-//       Serial.print(char(TxUdpBuffer[7]));
-//       Serial.print(F("] "));
-//       Serial.print(RemoteSwIP);
-//       Serial.print(F(":"));
-//       Serial.print(UdpCommand.remotePort());
-//       #if defined(WIFI)
-//         Serial.print(" | dBm: ");
-//         Serial.print(WiFi.RSSI());
-//       #endif
-//       Serial.println();
-//     }
-//     // send to all ip from storage
-//     IPAddress ControllerIP = UdpCommand.remoteIP();
-//     for (int i=0; i<16; i++){
-//       if(DetectedRemoteSwPort[i]!=0){
-//         TxUdpBuffer[0]=IdSufix(NET_ID) | i<<4;       // NET_ID by destination device
-//         RemoteSwIP = DetectedRemoteSw[i];
-//         RemoteSwPort = DetectedRemoteSwPort[i];
-//         if(ControllerIP!=RemoteSwIP){
-//           UdpCommand.beginPacket(RemoteSwIP, RemoteSwPort);
-//             UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
-//           UdpCommand.endPacket();
-//
-//           if(EnableSerialDebug>0){
-//             Serial.print(F("TX direct ID-"));
-//             Serial.print(i, HEX);
-//             Serial.print(IdSufix(NET_ID), HEX);
-//             Serial.print(F(" "));
-//             Serial.print(RemoteSwIP);
-//             Serial.print(F(":"));
-//             Serial.print(RemoteSwPort);
-//             Serial.print(F(" ["));
-//             Serial.print(TxUdpBuffer[0], HEX);
-//             for (int i=1; i<8; i++){
-//               Serial.print(char(TxUdpBuffer[i]));
-//               // Serial.print(F(" "));
-//             }
-//             Serial.print("]");
-//             #if defined(WIFI)
-//               Serial.print(" WiFi dBm: ");
-//               Serial.print(WiFi.RSSI());
-//             #endif
-//             Serial.println();
-//           }
-//         }else{
-//           if(EnableSerialDebug>0){
-//             Serial.print(F("noTX - RX prefix "));
-//             Serial.print(i, HEX);
-//             Serial.print(F(" "));
-//             Serial.print(RemoteSwIP);
-//             Serial.print(F(":"));
-//             Serial.println(RemoteSwPort);
-//           }
-//         }
-//       }
-//     }
-//     // broadcast all prefix
-//     if(A=='b' && B=='r' && C=='o' && DIRECT==0 && TxUdpBuffer[2] == 'm'){
-//       if(EnableSerialDebug>0){
-//         Serial.print("TX all prefix ");
-//         Serial.print(RemoteSwIP);
-//         Serial.print(":");
-//         Serial.print(BroadcastPort);
-//         Serial.print(F(" ["));
-//         Serial.print("*");
-//         for (int i=1; i<8; i++){
-//           Serial.print(char(TxUdpBuffer[i]));
-//           // Serial.print(F(" "));
-//         }
-//         Serial.println("]");
-//       }
-//       Serial.print("*) ");
-//       for (int i=0; i<16; i++){
-//         TxUdpBuffer[0]=IdSufix(NET_ID) | (i<<4);
-//         if(EnableSerialDebug>0){
-//           Serial.print(TxUdpBuffer[0], HEX);
-//           Serial.print(" ");
-//         }
-//         UdpCommand.beginPacket(RemoteSwIP, BroadcastPort);
-//         UdpCommand.write(TxUdpBuffer, sizeof(TxUdpBuffer));   // send buffer
-//         UdpCommand.endPacket();
-//       }
-//       if(EnableSerialDebug>0){
-//         Serial.println();
-//       }
-//     }   // end b r o
-//
-//   } // end EnableGroupPrefix
-// }
-//-------------------------------------------------------------------------------------------------------
+void handleRoot(){
+  if(streamSpiffsFile("/index.html")) return;
+  webserver.send_P(200, "text/html", ROOT_FALLBACK_HTML);   // FS not uploaded yet
+}
 
-void http1(){
-  // listen for incoming clients
-  WiFiClient webClient = server1.available();
-  if (webClient) {
-    // keep wind interrupt running - do NOT disable it during HTTP serving
-    if(EnableSerialDebug>0){
-      Serial.println("WIFI New webClient");
-    }
-    memset(linebuf,0,sizeof(linebuf));
-    charcount=0;
-    // an http request ends with a blank line
-    boolean currentLineIsBlank = true;
-    unsigned long httpTimeout=millis();   // abort stuck client (avoid WDT reset)
-    while (webClient.connected() && millis()-httpTimeout<3000) {
-      esp_task_wdt_reset();
-      if (webClient.available()) {
-        httpTimeout=millis();
-        char c = webClient.read();
-        HTTP_req += c;
-        // if(EnableSerialDebug>0){
-        //   Serial.write(c);
-        // }
-        //read char by char HTTP request
-        linebuf[charcount]=c;
-        if (charcount<sizeof(linebuf)-1) charcount++;
-        // if you've gotten to the end of the line (received a newline
-        // character) and the line is blank, the http request has ended,
-        // so you can send a reply
-        if (c == '\n' && currentLineIsBlank) {
-          // send a standard http response header
+void handleStatic(){
+  String path = webserver.uri();
+  if(path.endsWith("/")) path += "index.html";
+  if(streamSpiffsFile(path)) return;
+  // extensionless pretty URL (e.g. /wall -> /wall.html)
+  int slash = path.lastIndexOf('/');
+  if(path.indexOf('.', slash) < 0 && streamSpiffsFile(path + ".html")) return;
+  webserver.send(404, "text/plain", "404: not found");
+}
 
-          // send a standard http response header
-          webClient.println(F("HTTP/1.1 200 OK"));
-          webClient.println(F("Content-Type: text/html"));
-          webClient.println(F("Connection: close"));  // the connection will be closed after completion of the response
-          webClient.println();
-          webClient.println(F("  <!DOCTYPE html>"));
-          webClient.println(F("  <html>"));
-          webClient.println(F("      <head>"));
-          webClient.println(F("          <meta http-equiv=\"Content-Type\" content=\"text/html;charset=utf-8\"/>"));
-          webClient.println(F("          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"));
-          // webClient.println(F("          <meta http-equiv=\"refresh\" content=\"10\">"));
-          webClient.println(F("          <link rel=\"stylesheet\" type=\"text/css\" href=\"https://remoteqth.com/mqtt-wall/style.css\">"));
-          // TITLE
-          webClient.print(F("           <title>WX station "));
-          webClient.print(YOUR_CALL);
-          webClient.println(F("</title>"));
-          // END TITLE
-          webClient.println(F("          <link rel=\"apple-touch-icon\" sizes=\"180x180\" href=\"style/apple-touch-icon.png\">"));
-          webClient.println(F("          <link rel=\"mask-icon\" href=\"style/safari-pinned-tab.svg\" color=\"#5bbad5\">"));
-          webClient.println(F("          <link rel=\"icon\" type=\"image/png\" href=\"style/favicon-32x32.png\" sizes=\"32x32\">"));
-          webClient.println(F("          <link rel=\"icon\" type=\"image/png\" href=\"style/favicon-16x16.png\" sizes=\"16x16\">"));
-          webClient.println(F("          <link rel=\"manifest\" href=\"style/manifest.json\">"));
-          webClient.println(F("          <link rel=\"shortcut icon\" href=\"style/favicon.ico\">"));
-          webClient.println(F("          <meta name='apple-mobile-web-app-capable' content='yes'>"));
-          webClient.println(F("          <meta name='mobile-web-app-capable' content='yes'>"));
-          webClient.println(F("          <meta name=\"msapplication-config\" content=\"style/browserconfig.xml\">"));
-          webClient.println(F("          <meta name=\"theme-color\" content=\"#ffffff\">"));
-          webClient.println(F("          <script type=\"text/javascript\">"));
-          webClient.println(F("          var config = {"));
-          webClient.println(F("              server: {"));
-          webClient.print(F("                  uri: \"ws://"));
-          webClient.print(mqtt_server_ip[0]);
-          webClient.print(F("."));
-          webClient.print(mqtt_server_ip[1]);
-          webClient.print(F("."));
-          webClient.print(mqtt_server_ip[2]);
-          webClient.print(F("."));
-          webClient.print(mqtt_server_ip[3]);
-          webClient.println(":1884/\",");
-          webClient.println(F("              },"));
-          // TOPIC
-          webClient.print(F("              defaultTopic: \""));
-          webClient.print(YOUR_CALL);
-          webClient.println(F("/WX/#\","));
-          // END TOPIC
-          webClient.println(F("              showCounter: true,"));
-          webClient.println(F("              alphabeticalSort: true,"));
-          webClient.println(F("              qos: 0"));
-          webClient.println(F("          };"));
-          webClient.println(F("          </script>"));
-          // END TOPIC
-          webClient.println(F("      </head>"));
-          webClient.println(F("      <body>"));
-          webClient.print(F("          <div id=\"frame\" "));
-          webClient.println(F(">"));
-          webClient.println(F("              <div id=\"footer\">"));
-          webClient.println(F("                  <p class=\"status\" style=\"font-size: 150%;\">"));
-          // STATUS
-          webClient.print(F("Uptime: "));
-          if(millis() < 60000){
-            webClient.print(millis()/1000);
-            webClient.print(F(" seconds"));
-          }else if(millis() > 60000 && millis() < 3600000){
-            webClient.print(millis()/60000);
-            webClient.print(F(" minutes"));
-          }else if(millis() > 3600000 && millis() < 86400000){
-            webClient.print(millis()/3600000);
-            webClient.print(F(" hours"));
-          }else{
-            webClient.print(millis()/86400000);
-            webClient.print(F(" days"));
-          }
-          webClient.print(F(" | version: "));
-          webClient.println(REV);
-          webClient.print(F(" | <span"));
-            if(HWREVpcb!=HWREVsw){
-              webClient.print(F(" style='color:red; font-weight:bold;'"));
-            }
-          webClient.print(F("> PCB:</span> "));
-          webClient.print(HWREVsw);
-            if(HWREVpcb!=HWREVsw){
-              webClient.print(F("sw "));
-              webClient.print(HWREVpcb);
-              webClient.print(F("pcb"));
-            }
-          webClient.print(F(" | eth mac: "));
-          webClient.print(MACString);
-          webClient.println();
+// GET /api/live - last measured values from the measurement cycle (never reads sensors here,
+// so the poll rate cannot stall wind/temperature sampling). Hand-built JSON, no library.
+void handleApiLive(){
+  String j;
+  j.reserve(512);
+  j  = "{";
+  j += "\"rev\":\"" + String(REV) + "\",";
+  j += "\"call\":\"" + YOUR_CALL + "\",";
+  j += "\"utc\":\"" + UtcTime(1) + "\",";
+  j += "\"tempC\":" + String(TemperatureCelsius, 1) + ",";
+  j += "\"hum\":" + String(HumidityRelPercent, 0) + ",";
+  j += "\"dewC\":" + String(DewPointCelsius, 1) + ",";
+  j += "\"pressHPa\":" + String(PressureHPA, 1) + ",";
+  j += "\"windDir\":" + String(WindDir) + ",";
+  j += "\"windAvgMs\":" + String(WindSpeedAvgMPS, 1) + ",";
+  j += "\"windMaxMs\":" + String(WindSpeedMaxPeriodMPS, 1) + ",";
+  j += "\"rainMM\":" + String(RainTodayMM, 2) + ",";
+  j += "\"rainCount\":" + String(RainCount) + ",";
+  // which sensor cards are meaningful on this unit
+  #if defined(HTU21D)
+    j += "\"hasHum\":" + String(HTU21Denable ? "true" : "false") + ",";
+  #else
+    j += "\"hasHum\":false,";
+  #endif
+  #if defined(BMP280)
+    j += "\"hasPress\":" + String(BMP280enable ? "true" : "false") + ",";
+  #else
+    j += "\"hasPress\":false,";
+  #endif
+  #if defined(WINDY)
+    j += "\"windyId\":\"" + WindyStationId + "\",";
+  #else
+    j += "\"windyId\":\"\",";
+  #endif
+  j += "\"aprs\":" + String(AprsON ? "true" : "false");
+  j += "}";
+  webserver.sendHeader("Cache-Control", "no-store");
+  webserver.send(200, "application/json", j);
+}
 
-          webClient.print(F(" | dhcp: "));
-          if(DHCP_ENABLE==1){
-            webClient.print(F("ON"));
-          }else{
-            webClient.print(F("OFF"));
-          }
-          webClient.print(F(" | ip: "));
-          webClient.println(ETH.localIP());
-          // webClient.print(F(" | utc from ntp: "));
-          // webClient.println(F("timeClient.getFormattedTime()"));
-          // webClient.println(F("<br>MQTT subscribe command: $ mosquitto_sub -v -h mqttstage.prusa -t prusa-debug/prusafil/extrusionline/+/#"));
-          webClient.print(F(" | Broker ip: "));
-          webClient.print(mqtt_server_ip[0]);
-          webClient.print(F("."));
-          webClient.print(mqtt_server_ip[1]);
-          webClient.print(F("."));
-          webClient.print(mqtt_server_ip[2]);
-          webClient.print(F("."));
-          webClient.print(mqtt_server_ip[3]);
-          webClient.print(F(":"));
-          webClient.print(MQTT_PORT);
-          webClient.print(F(" | Refresh time "));
-          webClient.print(MeasureTimer[1]/60000);
-          webClient.println(F(" min"));
-          if(AprsON==true){
-            webClient.print(F(" | <a href=\"https://aprs.fi/#!call="));
-            webClient.print(YOUR_CALL);
-            webClient.println(F("\" target=_blank>APRS</a>"));
-          }
-          #if defined(WINDY)
-            // show the windy link only when actively uploading (API key set) and the public Station ID is known
-            if(WindyApiKey.length()>0 && WindyStationId.length()>0){
-              webClient.print(F(" | <a href=\"https://www.windy.com/station/"));
-              webClient.print(WindyStationId);
-              webClient.println(F("\" target=_blank>WINDY</a>"));
-            }
-          #endif
-          #if defined(OTAWEB)
-            webClient.print(F(" | <a href=\"http://"));
-            webClient.println(ETH.localIP());
-            webClient.print(F(":82/update\" target=_blank>Upload FW</a> | <a href=\"https://github.com/ok1hra/3D-print-WX-station/releases\" target=_blank>Releases</a> | <a href=\"http://"));
-            webClient.println(ETH.localIP());
-            webClient.print(F(":88\" target=_blank>html preview</a>"));
-          #endif
-          // END STATUS
-          webClient.println(F("              </p>"));
-          webClient.println(F("              </div>"));
-          webClient.println(F("              <div id=\"header\">"));
-          webClient.println(F("                  <div id=\"topic-box\">"));
-          webClient.println(F("                      <input type=\"text\" id=\"topic\" value=\"\" title=\"Topic to subscribe\">"));
-          webClient.println(F("                  </div>"));
-          webClient.println(F("              </div>"));
-          webClient.println(F("              <div id=\"toast\"></div>"));
-          webClient.println(F("              <section class=\"messages\"></section>"));
-          webClient.println(F("              <div id=\"footer\">"));
-          webClient.println(F("                  <p class=\"status\">"));
-          webClient.println(F("                      Client <code id=\"status-client\" title=\"Client ID\">?</code> is "));
-          webClient.println(F("                      <code id=\"status-state\" class=\"connecting\"><em>&bull;</em> <span>connecting...</span></code> to "));
-          webClient.println(F("                      <code id=\"status-host\">?</code>"));
-          webClient.println(F("                      <em>via</em> MQTT Wall 0.3.0 (<a href=\"https://github.com/bastlirna/mqtt-wall\">github</a>)"));
-          webClient.println(F("                      | <a href=\"https://remoteqth.com/w/doku.php?id=3d_print_aprs_wx_station\" target=\"_blank\">WX Wiki</a>."));
-          webClient.println(F("                  </p>"));
-          webClient.println(F("              </div>"));
-          webClient.println(F("          </div>"));
-          webClient.println(F("          <script type=\"text/javascript\" src=\"https://code.jquery.com/jquery-2.1.4.min.js\"></script>"));
-          webClient.println(F("          <script type=\"text/javascript\" src=\"https://code.jquery.com/color/jquery.color-2.1.2.min.js\"></script>"));
-          webClient.println(F("          <script type=\"text/javascript\" src=\"https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js\"></script>"));
-          webClient.println(F("          <script type=\"text/javascript\" src=\"https://remoteqth.com/mqtt-wall/wall.js\"></script>"));
-          webClient.println(F("      </body>"));
-          webClient.println(F("  </html>"));
+// GET /api/status - full sensor + raw debug dump for the /setup Status tab, mirroring the telnet
+// status block (RainPin ADC, wind direction register, RPM pulse periods + sentinels, raw vs
+// calibrated temps, raw barometric pressure). Polled only while the Status tab is open. I2C sensors
+// are read live like telnet; DS18B20 uses the cached value (a live read blocks ~750 ms). Auth-gated.
+void handleApiStatus(){
+  if(!webAuthOK()) return;
+  String j; j.reserve(768);
+  j  = "{";
+  // --- wind direction ---
+  j += "\"windDirRaw\":" + String(Azimuth()) + ",";          // 8-bit shift-register read (binary in UI)
+  j += "\"windDir\":" + String(WindDir) + ",";
+  j += "\"windDirShift\":" + String(WindDirShift) + ",";
+  // --- wind speed (pulse period in ms; 987654321 = no pulse / sentinel) ---
+  j += "\"rpmPin\":" + String(digitalRead(RpmPin)) + ",";
+  j += "\"lastPulseMs\":" + String(RpmPulse) + ",";
+  j += "\"lastMps\":" + String(PulseToMetterBySecond(RpmPulse), 2) + ",";
+  j += "\"avgPulseMs\":" + String(AvgRpmPulse()) + ",";
+  j += "\"avgMps\":" + String(PulseToMetterBySecond(AvgRpmPulse()), 2) + ",";
+  j += "\"avgSum\":" + String(RpmAverage[1]) + ",";
+  j += "\"avgCount\":" + String(RpmAverage[0]) + ",";
+  j += "\"periodMaxPulseMs\":" + String(PeriodMinRpmPulse) + ",";
+  j += "\"periodMaxMps\":" + String(PulseToMetterBySecond(PeriodMinRpmPulse), 2) + ",";
+  j += "\"periodMaxUtc\":\"" + WindSpeedMaxPeriodUTC + "\",";
+  j += "\"lifeMaxPulseMs\":" + String(MinRpmPulse) + ",";
+  j += "\"lifeMaxMps\":" + String(PulseToMetterBySecond(MinRpmPulse), 2) + ",";
+  j += "\"lifeMaxUtc\":\"" + MinRpmPulseTimestamp + "\",";
+  // --- rain ---
+  #if HWREVsw==8
+    j += "\"rainPinRaw\":" + String(analogRead(RainPin)) + ",";  // ADC: <1000 false, 1000-2000 true, >2000 no magnet
+  #else
+    j += "\"rainPinRaw\":-1,";
+  #endif
+  j += "\"rainDay\":\"" + RainCountDayOfMonth + "\",";
+  j += "\"rainCount\":" + String(RainCount) + ",";
+  j += "\"rainMM\":" + String(RainPulseToMM(RainCount), 2) + ",";
+  j += "\"mmInPulse\":" + String(mmInPulse) + ",";
+  j += "\"tempCal\":" + String(TempCal, 2) + ",";
+  // --- HTU21D humidity/temperature (live, raw = without TempCal) ---
+  #if defined(HTU21D)
+    if(HTU21Denable){
+      float htuHum = constrain(htu.readHumidity(), 0, 100);
+      float htuTemp = htu.readTemperature();
+      j += "\"hasHum\":true,";
+      j += "\"htuHum\":" + String(htuHum, 2) + ",";
+      j += "\"htuTempRaw\":" + String(htuTemp, 2) + ",";
+      j += "\"dewC\":" + String((htuTemp+TempCal) - (100.0 - htuHum) / 5.0, 2) + ",";
+    }else{ j += "\"hasHum\":false,"; }
+  #else
+    j += "\"hasHum\":false,";
+  #endif
+  // --- BMP280 pressure/temperature (live; raw barometric + Babinet sea-level) ---
+  #if defined(BMP280)
+    if(BMP280enable){
+      double bmpPress = bmp.readPressure();
+      float bmpTemp = bmp.readTemperature();
+      #if defined(DS18B20)
+        float refTempF = (ExtTemp ? (TemperatureCelsiusDS18B20+TempCal) : (bmpTemp+TempCal))*1.8+32;
+      #else
+        float refTempF = (bmpTemp+TempCal)*1.8+32;
+      #endif
+      j += "\"hasPress\":true,";
+      j += "\"bmpPressSea\":" + String(Babinet(bmpPress, refTempF)/100, 2) + ",";
+      j += "\"bmpPressRaw\":" + String(bmpPress/100, 2) + ",";
+      j += "\"bmpTempRaw\":" + String(bmpTemp, 2) + ",";
+    }else{ j += "\"hasPress\":false,"; }
+  #else
+    j += "\"hasPress\":false,";
+  #endif
+  // --- DS18B20 external temperature (cached, raw = without TempCal) ---
+  #if defined(DS18B20)
+    j += "\"hasDs18\":" + String(ExtTemp ? "true" : "false") + ",";
+    j += "\"ds18TempRaw\":" + String(TemperatureCelsiusDS18B20, 2) + ",";
+  #else
+    j += "\"hasDs18\":false,\"ds18TempRaw\":0,";
+  #endif
+  j += "\"uptimeSec\":" + String(millis()/1000);
+  j += "}";
+  webserver.sendHeader("Cache-Control", "no-store");
+  webserver.send(200, "application/json", j);
+}
 
-          if(EnableSerialDebug>0){
-            Serial.print(HTTP_req);
-          }
-          HTTP_req = "";
+// GET /api/wallcfg - WebSocket broker URI + station topic for the MQTT wall page (data/wall.html).
+// Mirrors what the old built-in :80 mqtt-wall page generated inline.
+void handleApiWallCfg(){
+  String uri = "ws://" + String(mqtt_server_ip[0]) + "." + String(mqtt_server_ip[1]) + "."
+             + String(mqtt_server_ip[2]) + "." + String(mqtt_server_ip[3]) + ":1884/";
+  String topic = YOUR_CALL + "/WX/#";
+  String j = "{\"uri\":\"" + uri + "\",\"topic\":\"" + topic + "\"}";
+  webserver.sendHeader("Cache-Control", "no-store");
+  webserver.send(200, "application/json", j);
+}
 
-          break;
-        }
-        if (c == '\n') {
-          // you're starting a new line
-          currentLineIsBlank = true;
-          // if (strstr(linebuf,"GET /h0 ") > 0){digitalWrite(GPIOS[0], HIGH);}else if (strstr(linebuf,"GET /l0 ") > 0){digitalWrite(GPIOS[0], LOW);}
-          // else if (strstr(linebuf,"GET /h1 ") > 0){digitalWrite(GPIOS[1], HIGH);}else if (strstr(linebuf,"GET /l1 ") > 0){digitalWrite(GPIOS[1], LOW);}
+// Minimal JSON string escaping for the few user strings we emit (callsign, coordinates, ...).
+String jsonEsc(const String& s){
+  String o; o.reserve(s.length()+4);
+  for(unsigned int i=0;i<s.length();i++){
+    char c=s[i];
+    if(c=='"'||c=='\\') { o+='\\'; o+=c; }
+    else if(c=='\n') o+="\\n";
+    else if(c=='\r') {}
+    else if((unsigned char)c < 0x20) {}
+    else o+=c;
+  }
+  return o;
+}
 
-          // you're starting a new line
-          currentLineIsBlank = true;
-          memset(linebuf,0,sizeof(linebuf));
-          charcount=0;
-        } else if (c != '\r') {
-          // you've gotten a character on the current line
-          currentLineIsBlank = false;
-        }
-      }
-    }
-    // give the web browser time to receive the data
-    delay(1);
-
-    // close the connection:
-    webClient.stop();
-   if(EnableSerialDebug>0){
-     Serial.println("WIFI webClient disconnected");
-   }
+// Write a fixed EEPROM string field: first s.length() bytes, rest padded 0xff (the read loops stop
+// on 0xff). Matches the existing telnet write convention (e.g. YOUR_CALL 141-160).
+void eepromWriteString(int start, int maxlen, const String& s){
+  for(int i=0;i<maxlen;i++){
+    if((unsigned int)i < s.length()) EEPROM.write(start+i, s[i]);
+    else EEPROM.write(start+i, 0xff);
   }
 }
-//-------------------------------------------------------------------------------------------------------
 
-void http2(){
-  // listen for incoming clients
-  WiFiClient webClient2 = server2.available();
-  if (webClient2) {
-    // keep wind interrupt running - do NOT disable it during HTTP serving
-    if(EnableSerialDebug>0){
-      Serial.println("WIFI New webClient2");
+// Basic-auth gate for the settings endpoints. Enforced only when a web password is set
+// (WebAuthEnabled). Public read endpoints (/, /api/live, /api/wallcfg, static) do not call this.
+bool webAuthOK(){
+  #if defined(OTAWEB)
+    if(WebAuthEnabled && !webserver.authenticate(WEB_AUTH_USER, WebAuthPassword.c_str())){
+      webserver.requestAuthentication();
+      return false;
     }
-    memset(linebuf,0,sizeof(linebuf));
-    charcount=0;
-    // an http request ends with a blank line
-    boolean currentLineIsBlank = true;
-    unsigned long httpTimeout=millis();   // abort stuck client (avoid WDT reset)
-    while (webClient2.connected() && millis()-httpTimeout<3000) {
-      esp_task_wdt_reset();
-      if (webClient2.available()) {
-        httpTimeout=millis();
-        char c = webClient2.read();
-        HTTP_req += c;
-        // if(EnableSerialDebug>0){
-        //   Serial.write(c);
-        // }
-        //read char by char HTTP request
-        linebuf[charcount]=c;
-        if (charcount<sizeof(linebuf)-1) charcount++;
-        // if you've gotten to the end of the line (received a newline
-        // character) and the line is blank, the http request has ended,
-        // so you can send a reply
-        if (c == '\n' && currentLineIsBlank) {
-          // send a standard http response header
+  #endif
+  return true;
+}
 
-          // send a standard http response header
-          webClient2.println(F("HTTP/1.1 200 OK"));
-          webClient2.println(F("Content-Type: text/html"));
-          webClient2.println(F("Connection: close"));  // the connection will be closed after completion of the response
-          webClient2.println();
-          webClient2.print(F("<!doctype html><html><head><title>"));
-          webClient2.print(YOUR_CALL);
-          webClient2.print(F(" WX</title><meta http-equiv=\"refresh\" content=\"300\"><meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\"><style type=\"text/css\">body {font-family: 'Roboto Condensed',sans-serif,Arial,Tahoma,Verdana; background: #444;}</style><link href='http://fonts.googleapis.com/css?family=Roboto+Condensed:300italic,400italic,700italic,400,700,300&subset=latin-ext' rel='stylesheet' type='text/css'></head><body><p style=\"color: #ccc; margin: 0 0 0 0; text-align: center;\"><span style=\"color: #999; font-size: 800%;\">"));
-          String strBuf = String(TemperatureCelsius);
-          webClient2.print(strBuf.substring(0,strBuf.length()-1));
-          webClient2.println(F("&deg;</span><br><span style=\"color: #000; background: #080; padding: 4px 6px 4px 6px; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;\">"));
-          webClient2.print(String(HumidityRelPercent));
-          webClient2.print(F("% | "));
-          webClient2.print(String(PressureHPA));
-          webClient2.print(F(" hPa "));
-          if(RainCount>0){
-            webClient2.print(F("| <strong style=\"color: #008;\">"));
-            webClient2.print(String(RainPulseToMM(RainCount)));
-            webClient2.print(F(" mm </strong>"));
-          }
-          webClient2.print(F("| <strong style=\"color: #fff;\">"));
-          webClient2.print(String(WindSpeedMaxPeriodMPS));
-          webClient2.print(F(" m/s</strong></span><br><span style=\"font-size: 600%; transform: rotate("));
-          webClient2.print(String(WindDir));
-          webClient2.print(F("deg); display: inline-block;\">&#10138;</span><br><a href=\""));
-          webClient2.print( ETH.localIP() );
-          webClient2.print(F(":88\" onclick=\"window.open( this.href, this.href, 'width=270,height=330,left=0,top=0,menubar=no,location=no,status=no' ); return false;\" style=\"color:#666;text-decoration:none;\">UTC "));
-          webClient2.print(UtcTime(1));
-          webClient2.println(F("</span></p></body></html>"));
+// GET /setup - serve the settings page, auth-gated. Gating the page (not just /api/config) makes the
+// browser show the Basic-auth prompt on navigation and then reuse the credentials for the api fetches.
+void handleSetupPage(){
+  if(!webAuthOK()) return;
+  if(streamSpiffsFile("/setup.html")) return;
+  webserver.send(404, "text/plain", "Missing /setup.html in SPIFFS");
+}
 
-          if(EnableSerialDebug>0){
-            Serial.print(HTTP_req);
-          }
-          HTTP_req = "";
+// GET /api/debug - current debug level + recent captured lines (oldest first). Auth-gated.
+void handleApiDebug(){
+  if(!webAuthOK()) return;
+  String j; j.reserve(DBG_RING_LINES*40);
+  j = "{\"level\":" + String(EnableSerialDebug) + ",\"lines\":[";
+  int start = (dbgRingHead - dbgRingCount + DBG_RING_LINES) % DBG_RING_LINES;
+  for(int n=0; n<dbgRingCount; n++){
+    int idx = (start + n) % DBG_RING_LINES;
+    if(n) j += ",";
+    j += "\"" + jsonEsc(String(dbgRing[idx])) + "\"";
+  }
+  j += "]}";
+  webserver.sendHeader("Cache-Control", "no-store");
+  webserver.send(200, "application/json", j);
+}
 
-          break;
-        }
-        if (c == '\n') {
-          // you're starting a new line
-          currentLineIsBlank = true;
-          // if (strstr(linebuf,"GET /h0 ") > 0){digitalWrite(GPIOS[0], HIGH);}else if (strstr(linebuf,"GET /l0 ") > 0){digitalWrite(GPIOS[0], LOW);}
-          // else if (strstr(linebuf,"GET /h1 ") > 0){digitalWrite(GPIOS[1], HIGH);}else if (strstr(linebuf,"GET /l1 ") > 0){digitalWrite(GPIOS[1], LOW);}
+// GET /api/config - everything the /setup page needs: editable settings (secrets returned only as a
+// "set" flag, never the value) plus read-only diagnostics. Hand-built JSON.
+void handleApiConfig(){
+  if(!webAuthOK()) return;
+  String j; j.reserve(900);
+  j  = "{";
+  // --- Stanice ---
+  j += "\"altitude\":" + String(Altitude) + ",";
+  j += "\"call\":\"" + jsonEsc(YOUR_CALL) + "\",";
+  j += "\"rainMmPulse\":" + String(mmInPulse, 2) + ",";
+  j += "\"windDirShift\":" + String(WindDirShift) + ",";
+  j += "\"tempCal\":" + String(TempCal, 2) + ",";
+  // --- Sit ---
+  j += "\"mqttIp\":\"" + String(mqtt_server_ip[0]) + "." + String(mqtt_server_ip[1]) + "." + String(mqtt_server_ip[2]) + "." + String(mqtt_server_ip[3]) + "\",";
+  j += "\"mqttPort\":" + String(MQTT_PORT) + ",";
+  j += "\"aprsOn\":" + String(AprsON ? "true":"false") + ",";
+  j += "\"aprsPassSet\":" + String(AprsPassword.length()>0 ? "true":"false") + ",";
+  j += "\"aprsCoord\":\"" + jsonEsc(AprsCoordinates) + "\",";
+  #if defined(WINDY)
+    j += "\"windyKeySet\":" + String(WindyApiKey.length()>0 ? "true":"false") + ",";
+    j += "\"windyId\":\"" + jsonEsc(WindyStationId) + "\",";
+  #else
+    j += "\"windyKeySet\":false,\"windyId\":\"\",";
+  #endif
+  // --- System ---
+  j += "\"pcb\":" + String(HWREVpcb) + ",";
+  j += "\"webAuthSet\":" + String(WebAuthPassword.length()>0 ? "true":"false") + ",";
+  // --- Debug ---
+  j += "\"debugLevel\":" + String(EnableSerialDebug) + ",";
+  // --- Diagnostics (read-only) ---
+  j += "\"rev\":\"" + String(REV) + "\",";
+  j += "\"swRev\":" + String(HWREVsw) + ",";
+  j += "\"uptimeSec\":" + String(millis()/1000) + ",";
+  j += "\"mac\":\"" + jsonEsc(MACString) + "\",";
+  #if defined(ETHERNET)
+    j += "\"ip\":\"" + String(ETH.localIP()[0]) + "." + String(ETH.localIP()[1]) + "." + String(ETH.localIP()[2]) + "." + String(ETH.localIP()[3]) + "\",";
+    j += "\"linkMbps\":" + String(ETH.linkSpeed()) + ",";
+  #else
+    j += "\"ip\":\"\",\"linkMbps\":0,";
+  #endif
+  j += "\"ntp\":\"" + jsonEsc(UtcTime(1)) + "\",";
+  j += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
+  j += "\"mqttUp\":" + String(mqttClient.connected() ? "true":"false") + ",";
+  j += "\"mqttTopic\":\"" + jsonEsc(String(YOUR_CALL) + "/WX/sub") + "\",";
+  j += "\"fsTotal\":" + String(FsMounted ? SPIFFS.totalBytes() : 0) + ",";
+  j += "\"fsUsed\":" + String(FsMounted ? SPIFFS.usedBytes() : 0);
+  j += "}";
+  webserver.sendHeader("Cache-Control", "no-store");
+  webserver.send(200, "application/json", j);
+}
 
-          // you're starting a new line
-          currentLineIsBlank = true;
-          memset(linebuf,0,sizeof(linebuf));
-          charcount=0;
-        } else if (c != '\r') {
-          // you've gotten a character on the current line
-          currentLineIsBlank = false;
-        }
-      }
+// POST /api/config - one global Save from /setup. Applies+persists every provided field, then if a
+// network field changed (MQTT broker/port, UDP port) reboots so it takes effect (mirrors telnet).
+void handleApiConfigSave(){
+  if(!webAuthOK()) return;
+  bool reboot=false;
+  String msg="saved";
+
+  // --- Stanice ---
+  if(webserver.hasArg("altitude")){
+    int v=webserver.arg("altitude").toInt();
+    if(v>=0 && v<=9000){ Altitude=v; EEPROM.writeInt(231, v); }
+  }
+  if(webserver.hasArg("call")){
+    String v=webserver.arg("call"); if(v.length()>20) v=v.substring(0,20);
+    YOUR_CALL=v; eepromWriteString(141, 20, v);
+  }
+  if(webserver.hasArg("rainMmPulse")){
+    float v=webserver.arg("rainMmPulse").toFloat();
+    if(v>=0 && v<=10){ mmInPulse=v; EEPROM.writeShort(5, (int)round(v*100)); }
+  }
+  if(webserver.hasArg("windDirShift")){
+    int v=webserver.arg("windDirShift").toInt();
+    if(v>=0 && v<=359){ WindDirShift=v; EEPROM.writeInt(240, v); }
+  }
+  if(webserver.hasArg("tempCal")){
+    float v=webserver.arg("tempCal").toFloat();
+    if(v>=-50 && v<=50){ TempCal=v; EEPROM.writeShort(2, (int)round(v*100)); }
+  }
+  // --- Sit (network fields require reboot) ---
+  if(webserver.hasArg("mqttIp")){
+    String s=webserver.arg("mqttIp"); int a=getValue(s,'.',0).toInt(),b=getValue(s,'.',1).toInt(),c=getValue(s,'.',2).toInt(),d=getValue(s,'.',3).toInt();
+    if(a>=0&&a<=255&&b>=0&&b<=255&&c>=0&&c<=255&&d>=0&&d<=255){
+      if(mqtt_server_ip[0]!=a||mqtt_server_ip[1]!=b||mqtt_server_ip[2]!=c||mqtt_server_ip[3]!=d) reboot=true;
+      EEPROM.write(161,a); EEPROM.write(162,b); EEPROM.write(163,c); EEPROM.write(164,d);
     }
-    // give the web browser time to receive the data
-    delay(1);
+  }
+  if(webserver.hasArg("mqttPort")){
+    int v=webserver.arg("mqttPort").toInt();
+    if(v>=1 && v<=65535){ if(MQTT_PORT!=v) reboot=true; EEPROM.writeInt(165, v); }
+  }
+  if(webserver.hasArg("aprsOn")){
+    bool v=(webserver.arg("aprsOn")=="1"||webserver.arg("aprsOn")=="true");
+    AprsON=v; EEPROM.write(199, v?1:0);
+  }
+  if(webserver.hasArg("aprsPass") && webserver.arg("aprsPass").length()>0){
+    String v=webserver.arg("aprsPass"); if(v.length()>5) v=v.substring(0,5);
+    AprsPassword=v; eepromWriteString(208, 5, v);
+  }
+  if(webserver.hasArg("aprsCoord")){
+    String v=webserver.arg("aprsCoord"); if(v.length()>18) v=v.substring(0,18);
+    AprsCoordinates=v; eepromWriteString(213, 18, v);
+  }
+  #if defined(WINDY)
+  if(webserver.hasArg("windyKey") && webserver.arg("windyKey").length()>0){
+    String v=webserver.arg("windyKey"); if(v.length()>123) v=v.substring(0,123);
+    WindyApiKey=v; eepromWriteString(244, 123, v);
+  }
+  if(webserver.hasArg("windyId")){
+    String v=webserver.arg("windyId"); if(v.length()>32) v=v.substring(0,32);
+    WindyStationId=v; eepromWriteString(373, 32, v);
+  }
+  #endif
+  // --- System ---
+  // web Basic-auth password: set here to enable/change auth. Clearing/disabling is recovery-only
+  // and lives in the serial/telnet menu ('P' command), since /setup is locked behind this password.
+  // The vendored OTA copies the password at begin(), so a change needs a reboot to apply everywhere.
+  #if defined(OTAWEB)
+  if(webserver.hasArg("webPass") && webserver.arg("webPass").length()>0){
+    String v=webserver.arg("webPass"); if(v.length()>64) v=v.substring(0,64);
+    WebAuthPassword=v; WebAuthEnabled=true;
+    eepromWriteString(405, 64, v); EEPROM.write(469, 1);
+    reboot=true;
+  }
+  #endif
 
-    // close the connection:
-    webClient2.stop();
-   if(EnableSerialDebug>0){
-     Serial.println("WIFI webClient2 disconnected");
-   }
+  // --- Debug (runtime only, not persisted - same as telnet '*') ---
+  if(webserver.hasArg("debugLevel")){
+    int v=webserver.arg("debugLevel").toInt();
+    if(v>=0 && v<=2) EnableSerialDebug=v;
+  }
+
+  EEPROMcommit();
+
+  if(reboot) msg="saved, rebooting to apply changes";
+  String j = "{\"ok\":true,\"reboot\":" + String(reboot?"true":"false") + ",\"msg\":\"" + jsonEsc(msg) + "\"}";
+  webserver.send(200, "application/json", j);
+
+  if(reboot){
+    delay(600);
+    ESP.restart();
   }
 }
+
 //-------------------------------------------------------------------------------------------------------
+
 
 void EthEvent(WiFiEvent_t event)
 {
@@ -4270,13 +3878,6 @@ void EthEvent(WiFiEvent_t event)
         }
       #endif
       ListCommands(0);
-
-      // EnableSerialDebug=1;
-      // TxUDP('s', packetBuffer[2], 'b', 'r', 'o', 0);    // 0=broadcast, 1= direct to RX IP
-      // if(TxUdpBuffer[2] == 'm'){
-      //   TxUDP('s', packetBuffer[2], ShiftOutByte[0], ShiftOutByte[1], ShiftOutByte[2], 0);
-      // }
-      // EnableSerialDebug=0;
       break;
 
     // case SYSTEM_EVENT_ETH_DISCONNECTED:
@@ -5204,980 +4805,3 @@ void testFileIO(fs::FS &fs, const char * path){
 
 
 //-------------------------------------------------------------------------------------------------------
-#if defined(AJAX)
-
-// ajax rx
-// void handlePostRot() {
-//  // String s = MAIN_page; //Read HTML contents
-//  String str = ajaxserver.arg("ROT");
-//  if(Status==0){
-//    AzimuthTarget = str.toInt() - StartAzimuth;
-//    if(AzimuthTarget<0){
-//        AzimuthTarget = 360+AzimuthTarget;
-//    }
-//    MqttPubString("AzimuthTarget", String(AzimuthTarget), false);
-//    RotCalculate();
-//  }else{
-//    if(Status<0){
-//      Status=-3;
-//    }else{
-//      Status=3;
-//    }
-//  }
-// }
-
-void handleSet() {
-
-  String yourcallERR= "";
-  String rotidERR= "";
-  String rotnameERR= "";
-  String startazimuthERR= "";
-  String maxrotatedegreeERR= "";
-  String antradiationangleERR= "";
-  String oneturnlimitsecERR= "";
-  String pulseperdegreeERR= "";
-  String pulseperdegreeSTYLE= "";
-  String pwmenableSTYLE= "";
-  String twowireSTYLE= "";
-  String pulseperdegreeDisable= "";
-  String pwmenableDisable= "";
-  String twowireDisable= "";
-  String mapurlERR= "";
-  String mqttERR= "";
-  String mqttportERR= "";
-  String edstoplowzoneERR= "";
-  String edstoplowzoneSTYLE= "";
-  String edstoplowzoneDisable= "";
-  String edstophighzoneERR= "";
-  String edstophighzoneSTYLE= "";
-  String edstophighzoneDisable= "";
-  String edstopsCHECKED= "";
-  String edstopsSTYLE= "";
-  String acmotorCHECKED= "";
-  String motorSELECT0= "";
-  String motorSELECT1= "";
-  String pwmSELECT0= "";
-  String pwmSELECT1= "";
-  String sourceSELECT0= "";
-  String sourceSELECT1= "";
-  String baudSELECT0= "";
-  String baudSELECT1= "";
-  String baudSELECT2= "";
-  String baudSELECT3= "";
-  String baudSELECT4= "";
-  String twowireSELECT0= "";
-  String twowireSELECT1= "";
-  String preampSELECT0= "";
-  String preampSELECT1= "";
-
-  if ( ajaxserver.hasArg("yourcall") == false \
-    && ajaxserver.hasArg("rotid") == false \
-    && ajaxserver.hasArg("rotname") == false \
-    && ajaxserver.hasArg("startazimuth") == false \
-    && ajaxserver.hasArg("maxrotatedegree") == false \
-    && ajaxserver.hasArg("mapurl") == false \
-    && ajaxserver.hasArg("antradiationangle") == false \
-    && ajaxserver.hasArg("edstoplowzone") == false \
-    && ajaxserver.hasArg("edstophighzone") == false \
-  ) {
-    // MqttPubString("Debug", "Form not valid", false);
-  }else{
-    // MqttPubString("Debug", "Form valid", false);
-
-
-
-
-// Altitude
-// WindDirShift
-// TempCal - Temperature calibration shift
-// mmInPulse - rain mm per pulse
-// MQTT broker IP | "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT));
-// MeasureTimer - TX repeat time ["+String(MeasureTimer[1]/60000)+" min]");
-// AprsON
-// String AprsPassword;
-// String AprsCoordinates;
-
-
-
-
-
-
-
-    // YOUR_CALL / topic
-    if ( ajaxserver.arg("yourcall").length()<1 || ajaxserver.arg("yourcall").length()>20){
-      yourcallERR= " Out of range 1-20 characters";
-    }else{
-      String str = String(ajaxserver.arg("yourcall"));
-      if(YOUR_CALL == str){
-        yourcallERR="";
-      }else{
-        yourcallERR=" Warning: MQTT topic has changed.";
-        YOUR_CALL = String(ajaxserver.arg("yourcall"));
-
-        int str_len = str.length();
-        char char_array[str_len];
-        str.toCharArray(char_array, str_len+1);
-        for (int i=0; i<20; i++){
-          if(i < str_len){
-            EEPROM.write(141+i, char_array[i]);
-          }else{
-            EEPROM.write(141+i, 0xff);
-          }
-        }
-        // EEPROM.commit();
-      }
-    }
-
-    // NET_ID
-    if ( ajaxserver.arg("rotid").length()<1 || ajaxserver.arg("rotid").length()>2){
-      rotidERR= " Out of range 1-2 characters";
-    }else{
-      String str = String(ajaxserver.arg("rotid"));
-      if(NET_ID == str){
-        rotidERR="";
-      }else{
-        rotidERR=" Warning: MQTT topic has changed.";
-        NET_ID = String(ajaxserver.arg("rotid"));
-
-        int str_len = str.length();
-        char char_array[str_len];
-        str.toCharArray(char_array, str_len+1);
-        for (int i=0; i<2; i++){
-          if(i < str_len){
-            EEPROM.write(i, char_array[i]);
-          }else{
-            EEPROM.write(i, 0xff);
-          }
-        }
-        // EEPROM.commit();
-      }
-    }
-
-    // RotName
-    if ( ajaxserver.arg("rotname").length()<1 || ajaxserver.arg("rotname").length()>20){
-      rotnameERR= " Out of range 1-20 characters";
-    }else{
-      String str = String(ajaxserver.arg("rotname"));
-      if(RotName == str){
-        rotnameERR="";
-      }else{
-        rotnameERR="";
-        RotName = String(ajaxserver.arg("rotname"));
-
-        int str_len = str.length();
-        char char_array[str_len];
-        str.toCharArray(char_array, str_len+1);
-        for (int i=0; i<19; i++){
-          if(i < str_len){
-            EEPROM.write(2+i, char_array[i]);
-          }else{
-            EEPROM.write(2+i, 0xff);
-          }
-        }
-        // EEPROM.commit();
-        MqttPubString("Name", String(RotName), true);
-      }
-    }
-
-    // StartAzimuth
-    if ( ajaxserver.arg("startazimuth").length()<1 || ajaxserver.arg("startazimuth").toInt()<0 || ajaxserver.arg("startazimuth").toInt()>359){
-      startazimuthERR= " Out of range number 0-359";
-    }else{
-      if(StartAzimuth == ajaxserver.arg("startazimuth").toInt()){
-        startazimuthERR="";
-      }else{
-        startazimuthERR="";
-        StartAzimuth = ajaxserver.arg("startazimuth").toInt();
-        EEPROM.writeUShort(23, StartAzimuth);
-        // EEPROM.commit();
-        MqttPubString("StartAzimuth", String(StartAzimuth), true);
-      }
-    }
-
-    // MaxRotateDegree
-    if ( ajaxserver.arg("maxrotatedegree").length()<1 || ajaxserver.arg("maxrotatedegree").toInt()<0 || ajaxserver.arg("maxrotatedegree").toInt()>719){
-      maxrotatedegreeERR= " Out of range number 0-719";
-    }else{
-      if(MaxRotateDegree == ajaxserver.arg("maxrotatedegree").toInt()){
-        maxrotatedegreeERR="";
-      }else{
-        maxrotatedegreeERR="";
-        MaxRotateDegree = ajaxserver.arg("maxrotatedegree").toInt();
-        EEPROM.writeUShort(25, MaxRotateDegree);
-        // EEPROM.commit();
-        MqttPubString("MaxRotateDegree", String(MaxRotateDegree), true);
-      }
-    }
-
-    // AntRadiationAngle
-    if ( ajaxserver.arg("antradiationangle").length()<1 || ajaxserver.arg("antradiationangle").toInt()<0 || ajaxserver.arg("antradiationangle").toInt()>180){
-      antradiationangleERR= " Out of range number 1-180";
-    }else{
-      if(AntRadiationAngle == ajaxserver.arg("antradiationangle").toInt()){
-        antradiationangleERR="";
-      }else{
-        antradiationangleERR="";
-        AntRadiationAngle = ajaxserver.arg("antradiationangle").toInt();
-        EEPROM.writeUShort(27, AntRadiationAngle);
-        // EEPROM.commit();
-        MqttPubString("AntRadiationAngle", String(AntRadiationAngle), true);
-      }
-    }
-
-    // MapUrl
-    if ( ajaxserver.arg("mapurl").length()<1 || ajaxserver.arg("mapurl").length()>50){
-      mapurlERR= " Out of range 1-50 characters";
-    }else{
-      String str = String(ajaxserver.arg("mapurl"));
-      if(MapUrl == str){
-        mapurlERR="";
-      }else{
-        mapurlERR="";
-        MapUrl = String(ajaxserver.arg("mapurl"));
-
-        int str_len = str.length();
-        char char_array[str_len];
-        str.toCharArray(char_array, str_len+1);
-        for (int i=0; i<50; i++){
-          if(i < str_len){
-            EEPROM.write(169+i, char_array[i]);
-          }else{
-            EEPROM.write(169+i, 0xff);
-          }
-        }
-        // EEPROM.commit();
-      }
-    }
-
-    // 223 AZsource
-    if(ajaxserver.arg("source").toInt()==0 && AZsource==true){
-      AZsource = false;
-      EEPROM.writeBool(223, 0);
-      MqttPubString("AZsource", "Potentiometer", true);
-    }else if(ajaxserver.arg("source").toInt()==1 && AZsource==false){
-      AZsource = true;
-      EEPROM.writeBool(223, 1);
-      MqttPubString("AZsource", "CW/CCW pulse", true);
-      if(Endstop == false){
-        Endstop = true;
-        EEPROM.writeBool(29, Endstop);
-        MqttPubString("EndstopUse", String(Endstop), true);
-      }
-    }
-
-    // 224-225 PulsePerDegree
-    if ( ajaxserver.arg("pulseperdegree").length()<1 || ajaxserver.arg("pulseperdegree").toInt()<1 || ajaxserver.arg("pulseperdegree").toInt()>100){
-      // pulseperdegreeERR= " Out of range number 1-100";
-    }else{
-      if(PulsePerDegree == ajaxserver.arg("pulseperdegree").toInt()){
-        pulseperdegreeERR="";
-      }else{
-        pulseperdegreeERR="";
-        PulsePerDegree = ajaxserver.arg("pulseperdegree").toInt();
-        EEPROM.writeUShort(224, PulsePerDegree);
-        // EEPROM.commit();
-        MqttPubString("PulsePerDegree", String(PulsePerDegree), true);
-      }
-    }
-
-    // 29  - Endstop
-    if(ajaxserver.arg("edstops").toInt()==1 && Endstop==false){
-      Endstop = true;
-      EEPROM.writeBool(29, Endstop);
-      // EEPROM.commit();
-      MqttPubString("EndstopUse", String(Endstop), true);
-    }else if(ajaxserver.arg("edstops").toInt()!=1 && Endstop==true){
-      if(AZsource == true){ //pulse
-        Endstop=true;
-      }else{  // potentiometer
-        Endstop = false;
-      }
-      EEPROM.writeBool(29, Endstop);
-      // EEPROM.commit();
-      MqttPubString("EndstopUse", String(Endstop), true);
-    }
-
-    // 228 AZtwoWire
-    if(ajaxserver.arg("twowire").toInt()==1 && AZtwoWire==false){
-      AZtwoWire = true;
-      digitalWrite(AZtwoWirePin, AZtwoWire);
-      EEPROM.writeBool(228, AZtwoWire);
-      MqttPubString("AZpotentiometer", "2-wire", true);
-    }else if(ajaxserver.arg("twowire").toInt()!=1 && AZtwoWire==true){
-      AZtwoWire = false;
-      digitalWrite(AZtwoWirePin, AZtwoWire);
-      EEPROM.writeBool(228, AZtwoWire);
-      MqttPubString("AZpotentiometer", "3-wire", true);
-    }
-
-    // 229 AZpreamp
-    if(ajaxserver.arg("preamp").toInt()==1 && AZpreamp==false){
-      AZpreamp = true;
-      digitalWrite(AZpreampPin, AZpreamp);
-      EEPROM.writeBool(229, AZpreamp);
-      MqttPubString("AZpreamp", "ON", true);
-    }else if(ajaxserver.arg("preamp").toInt()!=1 && AZpreamp==true){
-      AZpreamp = false;
-      digitalWrite(AZpreampPin, AZpreamp);
-      EEPROM.writeBool(229, AZpreamp);
-      MqttPubString("AZpreamp", "OFF", true);
-    }
-
-    // 36 - NoEndstopLowZone
-    if ( ajaxserver.arg("edstoplowzone").length()<1 || ajaxserver.arg("edstoplowzone").toInt()<2 || ajaxserver.arg("edstoplowzone").toInt()>15){
-      // edstoplowzoneERR= " Out of range number 2-15";
-    }else{
-      if(NoEndstopLowZone == float(ajaxserver.arg("edstoplowzone").toInt())/10 ) {
-        edstoplowzoneERR="";
-      }else{
-        edstoplowzoneERR="";
-        NoEndstopLowZone = float(ajaxserver.arg("edstoplowzone").toInt())/10;
-        // NoEndstopHighZone = 3.3 - NoEndstopLowZone;
-        // NoEndstopLowZone = NoEndstopLowZone;
-        EEPROM.writeByte(36, int(NoEndstopLowZone*10));
-        // EEPROM.commit();
-        MqttPubString("NoEndstopLowZone", String(NoEndstopLowZone), true);
-      }
-    }
-
-    // 222 - NoEndstopHighZone
-    if ( ajaxserver.arg("edstophighzone").length()<1 || ajaxserver.arg("edstophighzone").toInt()<16 || ajaxserver.arg("edstophighzone").toInt()>31){
-      // edstophighzoneERR= " Out of range number 16-31";
-    }else{
-      if(NoEndstopHighZone == float(ajaxserver.arg("edstophighzone").toInt())/10 ) {
-        edstophighzoneERR="";
-      }else{
-        edstophighzoneERR="";
-        NoEndstopHighZone = float(ajaxserver.arg("edstophighzone").toInt())/10;
-        // NoEndstopHighZone = 3.3 - NoEndstopLowZone;
-        // NoEndstopLowZone = NoEndstopLowZone;
-        EEPROM.writeByte(222, int(NoEndstopHighZone*10));
-        // EEPROM.commit();
-        MqttPubString("NoEndstopHighZone", String(NoEndstopHighZone), true);
-      }
-    }
-
-    // 220 OneTurnLimitSec
-    if ( ajaxserver.arg("oneturnlimitsec").length()<2 || ajaxserver.arg("oneturnlimitsec").toInt()<20 || ajaxserver.arg("oneturnlimitsec").toInt()>600){
-      oneturnlimitsecERR= " Out of range number 20-600";
-    }else{
-      if(OneTurnLimitSec == ajaxserver.arg("oneturnlimitsec").toInt()){
-        oneturnlimitsecERR="";
-      }else{
-        oneturnlimitsecERR="";
-        OneTurnLimitSec = ajaxserver.arg("oneturnlimitsec").toInt();
-        EEPROM.writeUShort(220, OneTurnLimitSec);
-        // EEPROM.commit();
-        MqttPubString("OneTurnLimitSec", String(OneTurnLimitSec), true);
-      }
-    }
-
-    // motor
-    // MqttPubString("Debug Motor", String(ajaxserver.arg("motor")), false);
-    // MqttPubString("Debug Motor2", String(ajaxserver.hasArg("motor")), false);
-    if(ajaxserver.arg("motor").toInt()==0 && ACmotor==true){
-      ACmotor = false;
-      EEPROM.writeBool(30, 0);
-      MqttPubString("Motor", "DC", true);
-    }else if(ajaxserver.arg("motor").toInt()==1 && ACmotor==false){
-      ACmotor = true;
-      EEPROM.writeBool(30, 1);
-      MqttPubString("Motor", "AC", true);
-    }
-
-    // 231 - PWMenable = true;
-    if(ajaxserver.arg("pwmenable").toInt()==0 && PWMenable==true){
-      PWMenable = false;
-      EEPROM.writeBool(231, 0);
-      MqttPubString("PWMenable", "OFF", true);
-    }else if(ajaxserver.arg("pwmenable").toInt()==1 && PWMenable==false){
-      PWMenable = true;
-      EEPROM.writeBool(231, 1);
-      MqttPubString("PWMenable", "ON", true);
-    }
-
-    // 226-227 BaudRate
-    static int BaudRateTmp=115200;
-    switch (ajaxserver.arg("baud").toInt()) {
-      case 0: {BaudRateTmp= 1200; break; }
-      case 1: {BaudRateTmp= 2400; break; }
-      case 2: {BaudRateTmp= 4800; break; }
-      case 3: {BaudRateTmp= 9600; break; }
-      case 4: {BaudRateTmp= 115200; break; }
-    }
-    if(BaudRateTmp!=BaudRate){
-      BaudRate=BaudRateTmp;
-      EEPROM.writeUShort(226, BaudRate);
-      MqttPubString("USB-BaudRate", String(BaudRate), true);
-      Serial.println("Baudrate change to "+String(BaudRate)+"...");
-      Serial.flush();
-      // Serial.end();
-      delay(1000);
-      Serial.begin(BaudRate);
-      delay(500);
-      Serial.println();
-      Serial.println();
-      Serial.println("New Baudrate "+String(BaudRate));
-    }
-
-    // 161-164 - MQTT broker IP
-    if ( ajaxserver.arg("mqttip0").length()<1 || ajaxserver.arg("mqttip0").toInt()>255){
-      mqttERR= " Out of range number 0-255";
-    }else{
-      if(mqtt_server_ip[0] == byte(ajaxserver.arg("mqttip0").toInt()) ){
-        mqttERR="";
-      }else{
-        mqttERR=" Warning: MQTT broker IP has changed.";
-        mqtt_server_ip[0] = byte(ajaxserver.arg("mqttip0").toInt()) ;
-        EEPROM.writeByte(161, mqtt_server_ip[0]);
-      }
-    }
-
-    if ( ajaxserver.arg("mqttip1").length()<1 || ajaxserver.arg("mqttip1").toInt()>255){
-      mqttERR= " Out of range number 0-255";
-    }else{
-      if(mqtt_server_ip[1] == byte(ajaxserver.arg("mqttip1").toInt()) ){
-        mqttERR="";
-      }else{
-        mqttERR=" Warning: MQTT broker IP has changed.";
-        mqtt_server_ip[1] = byte(ajaxserver.arg("mqttip1").toInt()) ;
-        EEPROM.writeByte(162, mqtt_server_ip[1]);
-      }
-    }
-
-    if ( ajaxserver.arg("mqttip2").length()<1 || ajaxserver.arg("mqttip2").toInt()>255){
-      mqttERR= " Out of range number 0-255";
-    }else{
-      if(mqtt_server_ip[2] == byte(ajaxserver.arg("mqttip2").toInt()) ){
-        mqttERR="";
-      }else{
-        mqttERR=" Warning: MQTT broker IP has changed.";
-        mqtt_server_ip[2] = byte(ajaxserver.arg("mqttip2").toInt()) ;
-        EEPROM.writeByte(163, mqtt_server_ip[2]);
-      }
-    }
-
-    if ( ajaxserver.arg("mqttip3").length()<1 || ajaxserver.arg("mqttip3").toInt()>255){
-      mqttERR= " Out of range number 0-255";
-    }else{
-      if(mqtt_server_ip[3] == byte(ajaxserver.arg("mqttip3").toInt()) ){
-        mqttERR="";
-      }else{
-        mqttERR=" Warning: MQTT broker IP has changed.";
-        mqtt_server_ip[3] = byte(ajaxserver.arg("mqttip3").toInt()) ;
-        EEPROM.writeByte(164, mqtt_server_ip[3]);
-      }
-    }
-
-    // 165-166 - MQTT_PORT
-    if ( ajaxserver.arg("mqttport").length()<1 || ajaxserver.arg("mqttport").toInt()<1 || ajaxserver.arg("mqttport").toInt()>65535){
-      mqttportERR= " Out of range number 1-65535";
-    }else{
-      if(MQTT_PORT == ajaxserver.arg("mqttport").toInt()){
-        mqttportERR="";
-      }else{
-        mqttportERR=" Warning: MQTT broker PORT has changed.";
-        MQTT_PORT = ajaxserver.arg("mqttport").toInt();
-        EEPROM.writeUShort(165, MQTT_PORT);
-      }
-    }
-
-
-    EEPROM.commit();
-  } // else form valid
-
-if(AZsource==true){
-  sourceSELECT0= "";
-  sourceSELECT1= " selected";
-  pulseperdegreeDisable="";
-  pulseperdegreeSTYLE="";
-  twowireSTYLE=" style='text-decoration: line-through; color: #555;'";
-  twowireDisable=" disabled";
-}else{
-  sourceSELECT0= " selected";
-  sourceSELECT1= "";
-  pulseperdegreeDisable=" disabled";
-  pulseperdegreeSTYLE=" style='text-decoration: line-through; color: #555;'";
-  twowireDisable="";
-  twowireSTYLE="";
-}
-
-if(AZtwoWire==true){
-  twowireSELECT0= "";
-  twowireSELECT1= " selected";
-}else{
-  twowireSELECT0= " selected";
-  twowireSELECT1= "";
-}
-
-if(AZpreamp==true){
-  preampSELECT0= "";
-  preampSELECT1= " selected";
-}else{
-  preampSELECT0= " selected";
-  preampSELECT1= "";
-}
-
-if(Endstop==true){
-  edstopsCHECKED= "checked";
-  edstopsSTYLE="";
-  edstoplowzoneDisable=" disabled";
-  edstophighzoneDisable=" disabled";
-  edstoplowzoneSTYLE=" style='text-decoration: line-through; color: #555;'";
-  edstophighzoneSTYLE=" style='text-decoration: line-through; color: #555;'";
-}else{
-  edstoplowzoneSTYLE=" style='color: orange;'";
-  edstophighzoneSTYLE=" style='color: orange;'";
-  edstopsCHECKED= "";
-  // edstopsSTYLE=" style='text-decoration: line-through; color: #555;'";
-}
-
-baudSELECT0= "";
-baudSELECT1= "";
-baudSELECT2= "";
-baudSELECT3= "";
-baudSELECT4= "";
-switch (BaudRate) {
-  case 1200: {baudSELECT0= " selected"; break; }
-  case 2400: {baudSELECT1= " selected"; break; }
-  case 4800: {baudSELECT2= " selected"; break; }
-  case 9600: {baudSELECT3= " selected"; break; }
-  case 115200: {baudSELECT4= " selected"; break; }
-}
-
-if(ACmotor==true){
-  motorSELECT0= "";
-  motorSELECT1= " selected";
-  pwmenableSTYLE=" style='text-decoration: line-through; color: #555;'";
-  pwmenableDisable=" disabled";
-}else{
-  motorSELECT0= " selected";
-  motorSELECT1= "";
-  pwmenableSTYLE="";
-  pwmenableDisable="";
-}
-
-if(PWMenable==true){
-  pwmSELECT0= "";
-  pwmSELECT1= " selected";
-}else{
-  pwmSELECT0= " selected";
-  pwmSELECT1= "";
-}
-
-  String HtmlSrc = "<!DOCTYPE html><html><head><title>SETUP</title>\n";
-  HtmlSrc +="<meta http-equiv='Content-Type' content='text/html; charset=UTF-8'>\n";
-  // <meta http-equiv = 'refresh' content = '600; url = /'>\n";
-  HtmlSrc +="<style type='text/css'> button#go {background-color: #ccc; padding: 5px 20px 5px 20px; border: none; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;} button#go:hover {background-color: orange;} table, th, td {color: #fff; border-collapse: collapse; border:0px } .tdr {color: #0c0; height: 40px; text-align: right; vertical-align: middle; padding-right: 15px} html,body {background-color: #333; text-color: #ccc; font-family: 'Roboto Condensed',sans-serif,Arial,Tahoma,Verdana;} a:hover {color: #fff;} a { color: #ccc; text-decoration: underline;} ";
-  HtmlSrc +=".b {border-top: 1px dotted #666;} .tooltip-text {visibility: hidden; position: absolute; z-index: 1; width: 300px; color: white; font-size: 12px; background-color: #DE3163; border-radius: 10px; padding: 10px 15px 10px 15px; } .hover-text:hover .tooltip-text { visibility: visible; } #right { top: -30px; left: 200%; } #top { top: -60px; left: -150%; } #left { top: -8px; right: 120%;}";
-  HtmlSrc +=".hover-text {position: relative; background: #888; padding: 5px 12px; margin: 5px; font-size: 15px; border-radius: 100%; color: #FFF; display: inline-block; text-align: center; }</style>\n";
-  HtmlSrc +="<link href='http://fonts.googleapis.com/css?family=Roboto+Condensed:300italic,400italic,700italic,400,700,300&subset=latin-ext' rel='stylesheet' type='text/css'></head><body>\n";
-  HtmlSrc +="<H1 style='color: #666; text-align: center;'>Setup<br><span style='font-size: 50%;'>(MAC ";
-  HtmlSrc +=MACString;
-  HtmlSrc +="|FW ";
-  HtmlSrc +=REV;
-  HtmlSrc +="|HW ";
-  HtmlSrc +=String(HardwareRev);
-  HtmlSrc +=")</span><span style='color: #333;'>";
-  HtmlSrc +=String(HWidValue);
-  HtmlSrc +="</span></H1><div style='display: flex; justify-content: center;'><table><form action='/set' method='post' style='color: #ccc; margin: 50 0 0 0; text-align: center;'>\n";
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='yourcall'>Your callsign:</label></td><td><input type='text' id='yourcall' name='yourcall' size='10' value='";
-  HtmlSrc += YOUR_CALL;
-  HtmlSrc +="'><span style='color:red;'>";
-  HtmlSrc += yourcallERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>Used as part of an MQTT topic</span></td></tr>\n<tr><td class='tdr'><label for='rotid'>Rotator ID:</label></td><td><input type='text' id='rotid' name='rotid' size='2' value='";
-  HtmlSrc += NET_ID;
-  HtmlSrc +="'><span style='color:red;'>";
-  HtmlSrc += rotidERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 300px;'>[1-2 chars]<br>Multiple rotators with the same TOPIC must have different IDs<br>Second part of MQTT topic</span></span></td></tr>\n<tr><td class='tdr'><label for='rotname'>Rotator name:</label></td><td><input type='text' id='rotname' name='rotname' size='20' value='";
-  HtmlSrc += RotName;
-  HtmlSrc +="'><span style='color:red;'>";
-  HtmlSrc += rotnameERR;
-  HtmlSrc +="</span></td></tr>\n<tr><td class='tdr'><label for='startazimuth'>Start CCW azimuth:</label></td><td><input type='text' id='startazimuth' name='startazimuth' size='3' value='";
-  HtmlSrc += StartAzimuth;
-  HtmlSrc +="'>&deg; <span style='color:red;'>";
-  HtmlSrc += startazimuthERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[0-359&deg;]</span></span></td></tr>\n<tr><td class='tdr'><label for='maxrotatedegree'>Rotation range in degrees:</label></td><td><input type='text' id='maxrotatedegree' name='maxrotatedegree' size='3' value='";
-  HtmlSrc += MaxRotateDegree;
-  HtmlSrc +="'>&deg; <span style='color:red;'>";
-  HtmlSrc += maxrotatedegreeERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Range from CCW to CW endstop in degrees</span></span></td></tr>\n<tr><td class='tdr'><label for='mapurl'>Background azimuth map URL:</label></td><td><input type='text' id='mapurl' name='mapurl' size='30' value='";
-  HtmlSrc += MapUrl;
-  HtmlSrc +="'><span style='color:red;'>";
-  HtmlSrc += mapurlERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='left'>DXCC generated every quarter hour is available at https://remoteqth.com/xplanet/. If you need another, please contact OK1HRA, or run own services.</span></span> <a href='https://remoteqth.com/xplanet/' target='_blank'>Available list</a></td></tr>\n";
-  HtmlSrc +="<tr><td class='tdr'><label for='antradiationangle'>Antenna radiation angle in degrees:</label></td><td><input type='text' id='antradiationangle' name='antradiationangle' size='3' value='";
-  HtmlSrc += AntRadiationAngle;
-  HtmlSrc +="'>&deg; <span style='color:red;'>";
-  HtmlSrc += antradiationangleERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[1-180&deg;]</span></span></td></tr>\n";
-
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='source'>Azimuth source:</label></td><td><select name='source' id='source'><option value='0'";
-  HtmlSrc += sourceSELECT0;
-  HtmlSrc +=">Potentiometer</option><option value='1'";
-  HtmlSrc += sourceSELECT1;
-  HtmlSrc +=">CW/CCW pulse</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Pulse deactivate control with KEY, and SW endstop</span></span></td></tr>\n";
-  HtmlSrc +="<tr><td class='tdr'><label for='pulseperdegree'><span";
-  HtmlSrc += pulseperdegreeSTYLE;
-  HtmlSrc +=">Pulse count per degree:</span></label></td><td><input type='text' id='pulseperdegree' name='pulseperdegree' size='3' value='";
-  HtmlSrc += PulsePerDegree;
-  HtmlSrc +="'";
-  HtmlSrc += pulseperdegreeDisable;
-  HtmlSrc +="><span style='color:red;'>";
-  HtmlSrc += pulseperdegreeERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[1-100]</span></span></td></tr>\n";
-
-  HtmlSrc +="<tr><td class='tdr'><label for='twowire'><span";
-  HtmlSrc += twowireSTYLE;
-  HtmlSrc +=">Azimuth potentiometer:</span></label></td><td><select name='twowire' id='twowire'";
-  HtmlSrc += twowireDisable;
-  HtmlSrc +="><option value='0'";
-  HtmlSrc += twowireSELECT0;
-  HtmlSrc +=">3 Wire</option><option value='1'";
-  HtmlSrc += twowireSELECT1;
-  HtmlSrc +=">2 Wire</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>2 wire use 9mA CC source<br>3 wire use 9V CV source</span></span>";
-  if(AZtwoWire==true && AZpreamp==true){
-    HtmlSrc +="<br><span style='color: red;'>Recommend using a 3-wire potentiometer with the preamplifier ON</span>";
-  }
-  HtmlSrc +="</td></tr>\n";
-
-  HtmlSrc +="<tr><td class='tdr'><label for='preamp'><span";
-  HtmlSrc += twowireSTYLE;
-  HtmlSrc +=">Azimuth gain/shift op-amp:</span></label></td><td><select name='preamp' id='preamp'";
-  HtmlSrc += twowireDisable;
-  HtmlSrc +="><option value='0'";
-  HtmlSrc += preampSELECT0;
-  HtmlSrc +=">OFF</option><option value='1'";
-  HtmlSrc += preampSELECT1;
-  HtmlSrc +=">ON</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>For potentiometer use one turn from any<br>Need manualy preset with two trimmer<br>More in Wiki page</span></span></td></tr>\n";
-
-  // if(AZsource==false){ // potentiometer
-    HtmlSrc +="<tr class='b'><td class='tdr'><label for='edstops'><span";
-    HtmlSrc += edstopsSTYLE;
-    HtmlSrc +=">Hardware endstops INSTALLED:</span></label></td><td><input type='checkbox' id='edstops' name='edstops' value='1' ${postData.edstops?'checked':''} ";
-    HtmlSrc += edstopsCHECKED;
-    HtmlSrc +="><span class='hover-text'>?<span class='tooltip-text' id='top'>If disabled, it reduces the range of the potentiometer by the forbidden zone on edges</span></span></td></tr>\n";
-      HtmlSrc +="<tr><td class='tdr'><label for='edstoplowzone'><span";
-      HtmlSrc += edstoplowzoneSTYLE;
-      HtmlSrc +=">CCW forbidden zone<br>(software endstops):</span></label></td><td><input type='text' id='edstoplowzone' name='edstoplowzone' size='3' value='";
-      HtmlSrc += int(NoEndstopLowZone*10);
-      HtmlSrc +="'";
-      HtmlSrc += edstoplowzoneDisable;
-      HtmlSrc +="> tenths of a Volt <span style='color:red;'>";
-      HtmlSrc += edstoplowzoneERR;
-      HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[2-15] tenths of a Volt</span></span></td></tr>\n";
-
-      HtmlSrc +="<tr><td class='tdr'><label for='edstophighzone'><span";
-      HtmlSrc += edstophighzoneSTYLE;
-      HtmlSrc +=">CW forbidden zone<br>(software endstops):</span></label></td><td><input type='text' id='edstophighzone' name='edstophighzone' size='3' value='";
-      HtmlSrc += int(NoEndstopHighZone*10);
-      HtmlSrc +="'";
-      HtmlSrc += edstophighzoneDisable;
-      HtmlSrc +="> tenths of a Volt <span style='color:red;'>";
-      HtmlSrc += edstophighzoneERR;
-      HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 100px;'>Allowed range<br>[16-31] tenths of a Volt</span></span></td></tr>\n";
-  // }
-
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='oneturnlimitsec'>Watchdog speed:</label></td><td><input type='text' id='oneturnlimitsec' name='oneturnlimitsec' size='3' value='";
-  HtmlSrc += OneTurnLimitSec;
-  HtmlSrc +="'> seconds per one turn <span style='color:red;'>";
-  HtmlSrc += oneturnlimitsecERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='left' style='width: 300px;'>Allowed range [20-600sec]<br>Lower speed limit activating the watchdog<br>Use a number 50% higher than the actual speed of your rotator</span></span></td></tr>\n";
-
-  HtmlSrc +="<tr><td class='tdr'><label for='acmotor'>Motor supply:</label></td><td><select name='motor' id='motor'><option value='0'";
-  HtmlSrc += motorSELECT0;
-  HtmlSrc +=">DC</option><option value='1'";
-  HtmlSrc += motorSELECT1;
-  HtmlSrc +=">AC</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>DC with optional PWM<br>AC activates another relay sequence</span></span></td></tr>\n";
-
-  HtmlSrc +="<tr><td class='tdr'><label for='pwmenable'><span";
-  HtmlSrc += pwmenableSTYLE;
-  HtmlSrc += ">DC PWM control:</label></td><td><select name='pwmenable' id='pwmenable' ";
-  HtmlSrc += pwmenableDisable;
-  HtmlSrc +="><option value='0'";
-  HtmlSrc += pwmSELECT0;
-  HtmlSrc +=">OFF</option><option value='1'";
-  HtmlSrc += pwmSELECT1;
-  HtmlSrc +=">ON</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>If disable, mosfet must be bridged,<br>or replace by jumper<br>More in Wiki page</span></span></td></tr>\n";
-
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='baud'>USB serial BAUDRATE:</label></td><td><select name='baud' id='baud'><option value='0'";
-  HtmlSrc += baudSELECT0;
-  HtmlSrc +=">1200</option><option value='1'";
-  HtmlSrc += baudSELECT1;
-  HtmlSrc +=">2400</option><option value='2'";
-  HtmlSrc += baudSELECT2;
-  HtmlSrc +=">4800</option><option value='3'";
-  HtmlSrc += baudSELECT3;
-  HtmlSrc +=">9600</option><option value='4'";
-  HtmlSrc += baudSELECT4;
-  HtmlSrc +=">115200</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Use for GS-232 protocol<br>Must restart after change</span></span></td></tr>\n";
-
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='mqttip0'>MQTT broker IP:</label></td><td>";
-  HtmlSrc +="<input type='text' id='mqttip0' name='mqttip0' size='1' value='" + String(mqtt_server_ip[0]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip1' name='mqttip1' size='1' value='" + String(mqtt_server_ip[1]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip2' name='mqttip2' size='1' value='" + String(mqtt_server_ip[2]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip3' name='mqttip3' size='1' value='" + String(mqtt_server_ip[3]) + "'>";
-  HtmlSrc +="<span style='color:red;'>";
-  HtmlSrc += mqttERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Default public broker 54.38.157.134<br>If the first digit is zero, MQTT is disabled</span></span></td></tr>\n";
-
-  HtmlSrc +="<tr><td class='tdr'><label for='mqttport'>MQTT broker PORT:</label></td><td>";
-  HtmlSrc +="<input type='text' id='mqttport' name='mqttport' size='2' value='" + String(MQTT_PORT) + "'>\n";
-  HtmlSrc +="<span style='color:red;'>";
-  HtmlSrc += mqttportERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Default public broker port 1883</span></span></td></tr>\n";
-
-  HtmlSrc +="<tr class='b'><td class='tdr'></td><td><button id='go'>&#10004; Change</button></form>&nbsp; ";
-  HtmlSrc +="<a href='/cal' onclick=\"window.open( this.href, this.href, 'width=700,height=1150,left=0,top=0,menubar=no,location=no,status=no' ); return false;\"><button id='go'>Calibrate &#8618;</button></a>";
-  HtmlSrc +="</td></tr>\n";
-
-  // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>\n";
-  // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>";
-  // HtmlSrc +="<tr><td class='tdr'><a href='/'><button id='go'>&#8617; Back to Control</button></a></td><td class='tdl'><a href='/cal' onclick=\"window.open( this.href, this.href, 'width=700,height=715,left=0,top=0,menubar=no,location=no,status=no' ); return false;\"><button id='go'>Calibrate &#8618;</button></a></td></tr>";
-  HtmlSrc +="<tr><td class='tdr'></td><td class='tdl'><span style='color: #666;'>After change, refresh all other page for apply changes.</span><br><a href='https://remoteqth.com/w/doku.php?id=simple_rotator_interface_v' target='_blank'>More on Wiki &#10138;</a></td></tr>\n";
-  HtmlSrc +="</body></html>\n";
-
-  ajaxserver.send(200, "text/html", HtmlSrc); //Send web page
-}
-
-void handleCal() {
-
-  if ( ajaxserver.hasArg("stop")==1 ){
-    if(Status<0){
-      Status=-3;
-    }else if(Status>0){
-      Status=3;
-    }
-  }
-
-  if ( ajaxserver.hasArg("cw")==1 ){
-    Status=1; //digitalWrite(BrakePin, HIGH); delay(24);
-    // RunTimer();
-  }
-
-  if ( ajaxserver.hasArg("ccw")==1 ){
-    Status=-1; //digitalWrite(BrakePin, HIGH); delay(24);
-    // RunTimer();
-  }
-
-  if ( ajaxserver.hasArg("reverse")==1 ){
-    Reverse = !Reverse;
-    EEPROM.writeBool(35, Reverse);
-    EEPROM.commit();
-    MqttPubString("ReverseControl", String(Reverse), true);
-  }
-
-  if ( ajaxserver.hasArg("reverseaz")==1 ){
-    ReverseAZ = !ReverseAZ;
-    EEPROM.writeBool(230, ReverseAZ);
-    EEPROM.commit();
-    MqttPubString("ReverseAzimuth", String(ReverseAZ), true);
-  }
-
-  if ( ajaxserver.hasArg("clear")==1 ){
-    CcwRaw=142;
-    CwRaw = 3155;
-    EEPROM.writeUShort(31, CcwRaw);
-    EEPROM.writeUShort(33, CwRaw);
-    EEPROM.commit();
-    MqttPubString("CcwRaw", String(CcwRaw), true);
-    MqttPubString("CwRaw", String(CwRaw), true);
-  }
-
-  long RawTmp = 0;
-
-  // 31-32 CcwRaw
-  if ( ajaxserver.hasArg("setccw")==1 ){
-    // RawTmp = 0;
-    // for (int i=0; i<10; i++){
-    //   RawTmp = RawTmp + readADC_Cal(analogRead(AzimuthPin));
-    //   delay(10);
-    // }
-    // CcwRaw = RawTmp / 10;
-    CcwRaw = AzimuthValue;
-    EEPROM.writeUShort(31, CcwRaw);
-    EEPROM.commit();
-    MqttPubString("CcwRaw", String(CcwRaw), true);
-  }
-
-  // 33-34  CwRaw
-  if ( ajaxserver.hasArg("setcw")==1 ){
-    // RawTmp = 0;
-    // for (int i=0; i<10; i++){
-    //   RawTmp = RawTmp + readADC_Cal(analogRead(AzimuthPin));
-    //   delay(10);
-    // }
-    // CwRaw = RawTmp / 10;
-    CwRaw = AzimuthValue;
-    EEPROM.writeUShort(33, CwRaw);
-    EEPROM.commit();
-    MqttPubString("CwRaw", String(CwRaw), true);
-  }
-
-    // MqttPubString("Debug setcw", String(ajaxserver.arg("setcw")), false);
-    // MqttPubString("Debug setcw 2", String(ajaxserver.hasArg("setcw")), false);
-
-  String ReverseCOLOR= "";
-  String ReverseSTATUS= "";
-  if(Reverse==true){
-    // ReverseCOLOR= " style='background-color: #c00; color: #FFF;'";
-    ReverseCOLOR= " class='red'";
-    ReverseSTATUS= "ON";
-  }else{
-    ReverseCOLOR= "";
-    ReverseSTATUS= "OFF";
-  }
-
-  String ReverseAzCOLOR= "";
-  String ReverseAzSTATUS= "";
-  if(ReverseAZ==true){
-    // ReverseCOLOR= " style='background-color: #c00; color: #FFF;'";
-    ReverseAzCOLOR= " class='red'";
-    ReverseAzSTATUS= "ON";
-  }else{
-    ReverseAzCOLOR= "";
-    ReverseAzSTATUS= "OFF";
-  }
-
-  String HtmlSrc = "<!DOCTYPE html><html><head><title>CALIBRATE</title>";
-  HtmlSrc +="<meta http-equiv='Content-Type' content='text/html; charset=UTF-8'>";
-  HtmlSrc +="<style type='text/css'>button {background-color: #ccc; padding: 5px 20px 5px 20px; border: none; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;} button:hover {background-color: orange;} ";
-  HtmlSrc +=".red {background-color: #c00; color: #FFF;} table, th, td { color: #fff; border: 0px; border-color: #666; border-style: solid; margin: 0px;}";
-  HtmlSrc +=".tdl { text-align: left; padding: 10px;}";
-  HtmlSrc +=".tdc { text-align: center; padding: 10px;}";
-  HtmlSrc +=".tdr { text-align: right; padding: 10px;}";
-  HtmlSrc +="html,body { background-color: #333; text-color: #ccc; font-family: 'Roboto Condensed',sans-serif,Arial,Tahoma,Verdana;}";
-  HtmlSrc +="a:hover {color: #fff;}";
-  HtmlSrc +="a {color: #ccc; text-decoration: underline;}";
-  HtmlSrc +="</style><link href='http://fonts.googleapis.com/css?family=Roboto+Condensed:300italic,400italic,700italic,400,700,300&subset=latin-ext' rel='stylesheet' type='text/css'></head><body>";
-  HtmlSrc +="<H1 style='color: #666; text-align: center;'>Calibration steps:<br><span style='font-size: 50%;'>(MAC ";
-  HtmlSrc +=MACString;
-  HtmlSrc +="|FW ";
-  HtmlSrc +=REV;
-  HtmlSrc +="|HW ";
-  HtmlSrc +=String(HardwareRev);
-  // HtmlSrc +="|";
-  // HtmlSrc +=String(HWidValue);
-  HtmlSrc +=")</span></H1><div style='display: flex; justify-content: center;'>";
-  HtmlSrc +="<table cellspacing='0' cellpadding='0'><form action='/cal' method='post' style='color: #ccc; margin: 50 0 0 0; text-align: center;'>";
-  HtmlSrc +="<tr><td class='tdc' colspan='3' style='background-color: #666; border-top-left-radius: 20px; border-top-right-radius: 20px;'><span style='font-size: 200%;'>1. Rotate direction calibrate</span></td></tr>";
-  HtmlSrc +="<tr style='background-color: #666;'>";
-  HtmlSrc +="<td class='tdr'><button id='ccw' name='ccw'>&#8630; CCW</button></td>";
-  HtmlSrc +="<td class='tdc'><button id='stop' name='stop'>&#10008; STOP</button></td>";
-  HtmlSrc +="<td class='tdl'><button id='cw' name='cw'>CW &#8631;</button></td>";
-  HtmlSrc +="</tr><tr>";
-  HtmlSrc +="<td class='tdc' colspan='3' style='background-color: #666;'><button id='reverse' name='reverse'";
-  HtmlSrc +=ReverseCOLOR;
-  HtmlSrc +=">REVERSE-CONTROL-<strong>";
-  HtmlSrc +=ReverseSTATUS;
-  HtmlSrc +="</strong></button></td>";
-  HtmlSrc +="</tr><tr>";
-  HtmlSrc +="<td class='tdc' colspan='3' style='color: #333; background-color: #666; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;'><span style='color: #ccc;'>Instruction:</span> if it does not rotate according to the buttons, reverse the control</td>";
-  HtmlSrc +="</tr><tr>";
-  HtmlSrc +="<td class='tdc' colspan='3' style='height:30px'></td></tr>";
-
-  HtmlSrc +="<tr><td class='tdc' colspan='3' style='background-color: #666; border-top-left-radius: 20px; border-top-right-radius: 20px;'><span style='font-size: 200%;'>2. Azimuth calibrate</span></td>";
-  HtmlSrc +="</tr><tr>";
-  HtmlSrc +="<td class='tdc' colspan='3' style='background-color: #666;'><div style='position: relative;'><canvas class='top' id='Azimuth' width='600' height='140'>Your browser does not support the HTML5 canvas tag.</canvas></div></td>";
-  HtmlSrc +="</tr><tr style='background-color: #666;'>";
-  HtmlSrc +="<td class='tdl'><button id='setccw' name='setccw'>&#8676; SAVE CCW</button></td>";
-  HtmlSrc +="<td class='tdc' style='background-color: #666;'><button id='clear' name='clear'>";
-  HtmlSrc +="RESET CW/CCW SAVE</button></td>";
-  HtmlSrc +="<td class='tdr'><button id='setcw' name='setcw'>SAVE CW &#8677;</button></td>";
-  HtmlSrc +="</tr><tr>";
-  HtmlSrc +="<td class='tdc' colspan='3' style='background-color: #666;'><button id='reverseaz' name='reverseaz'";
-  HtmlSrc +=ReverseAzCOLOR;
-  HtmlSrc +=">REVERSE-AZIMUTH-<strong>";
-  HtmlSrc +=ReverseAzSTATUS;
-  HtmlSrc +="</strong></button></td>";
-  HtmlSrc +="</tr><tr>";
-  HtmlSrc +="<td class='tdc' colspan='3' style='color: #333; background-color: #666; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;'>";
-  if( AZsource == false && AZtwoWire == true && CwRaw < 1577 ){
-    HtmlSrc +="<span style='color: #ccc;'>Recommendation: </span><span style='color: #0c0;'>If you are using a 2 wire potentiometer less than 500Ω,<br>you can increase the sensitivity if you short the J16 jumper on the back side PCB.<br><br></span>";
-  }
-  HtmlSrc +="<span style='color: #ccc;'>Instruction:</span><br>&#8226; If azimuth potentiometer move opposite direction (CCW left and CW right),<br>activate REVERSE-AZIMUTH button<br>&#8226; Rotate to both CCW ";
-  HtmlSrc +=StartAzimuth;
-  HtmlSrc +="&deg; and CW ";
-  HtmlSrc +=StartAzimuth+MaxRotateDegree;
-  HtmlSrc +="&deg; ends and save new limits<br>&#8226; After calibrate rotate to full CCW limits, then measure real azimuth<br>and put this value to &ldquo;Start CCW azimuth:&rdquo;	field in Setup page</td>";
-  HtmlSrc +="</tr><tr>";
-  HtmlSrc +="<td class='tdc' colspan='3' style='height:30px'></td></tr>";
-
-  HtmlSrc +="<tr><td class='tdc' colspan='3' style='background-color: #666; border-top-left-radius: 20px; border-top-right-radius: 20px;'><span style='font-size: 200%;'>3. Front panel calibrate (optional)</span></td>";
-  HtmlSrc +="</tr><tr>";
-  HtmlSrc +="<td class='tdc' colspan='3' style='color: #333; background-color: #666; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;'>";
-  HtmlSrc +="<span style='font-size: 150%;'>Panel value <span style='font-weight: bold; color: #0a0;' id='frontAZValue'>0</span><br></span>";
-  HtmlSrc +="<span style='color: #ccc;'><br>Instruction:</span><br>&#8226; Rotate front panel potentiometer axis without knob to value 0&deg <br>&#8226; Put knob with orientation to north on axis<br>&#8226; Fixate knob to axis on position north</td></tr>";
-
-  HtmlSrc +="</table></div><div style='display: flex; justify-content: center;'><span><p style='text-align: center;'><a href='https://remoteqth.com/w/doku.php?id=simple_rotator_interface_v' target='_blank'>More on Wiki &#10138;</a></p></span></div>";
-
-  String s = CAL_page; //Read HTML contents
-  HtmlSrc +=s;
-  ajaxserver.send(200, "text/html", HtmlSrc); //Send web page
-}
-
-void handlePostStop() {
-  if(Status<0){
-    Status=-3;
-  }else if(Status>0){
-    Status=3;
-  }
-}
-void handleRoot() {
- String s = MAIN_page; //Read HTML contents
- ajaxserver.send(200, "text/html", s); //Send web page
-}
-void handleADC() {
- ajaxserver.send(200, "text/plane", String(VoltageValue)); //Send ADC value only to client ajax request
-}
-void handleAZ() {
-  ajaxserver.send(200, "text/plane", String(Azimuth) );
-}
-void handleFrontAZ() {
-  if(AZmasterValue==142){
-    ajaxserver.send(200, "text/plane", "off" );
-  }else{
-    ajaxserver.send(200, "text/plane", String(AZmaster)+"&deg;" );
-  }
-}
-void handleAZadc() {
-  ajaxserver.send(200, "text/plane", String(AzimuthValue) );
-}
-void handleStat() {
-  ajaxserver.send(200, "text/plane", String(Status+4) );
-}
-void handleStart() {
-  ajaxserver.send(200, "text/plane", String(StartAzimuth) );
-}
-void handleMax() {
-  ajaxserver.send(200, "text/plane", String(MaxRotateDegree) );
-}
-void handleAnt() {
-  ajaxserver.send(200, "text/plane", String(AntRadiationAngle) );
-}
-void handleAntName() {
-  ajaxserver.send(200, "text/plane", RotName );
-}
-void handleMapUrl() {
-  ajaxserver.send(200, "text/plane", MapUrl );
-}
-void handleEndstop() {
-  ajaxserver.send(200, "text/plane", String(Endstop) );
-}
-void handleEndstopLowZone() {
-  ajaxserver.send(200, "text/plane", String(NoEndstopLowZone) );
-}
-void handleEndstopHighZone() {
-  ajaxserver.send(200, "text/plane", String(NoEndstopHighZone) );
-}
-void handleCwraw() {
-  ajaxserver.send(200, "text/plane", String(CwRaw) );
-}
-void handleCcwraw() {
-  ajaxserver.send(200, "text/plane", String(CcwRaw) );
-}
-void handleMAC() {
-  ajaxserver.send(200, "text/plane", String(MACString) );
-}
-void handleUptime() {
-  ajaxserver.send(200, "text/plane", String(millis()/1000) );
-}
-
-#endif //#if defined(AJAX)

@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WX setup</title>
+<style>
+  :root{--bg:#2b2f33;--card:#373c41;--fg:#e8eaed;--mut:#9aa0a6;--accent:#3b8eea;--ok:#3ba55d;--err:#e0534e;--line:#4b5258}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg);padding-bottom:5rem}
+  header{display:flex;align-items:center;gap:1rem;padding:.8rem 1rem;border-bottom:1px solid var(--line)}
+  header h1{font-size:1.1rem;margin:0;font-weight:600}
+  header a{color:var(--accent);text-decoration:none;font-size:.9rem}
+  .tabs{display:flex;gap:.3rem;flex-wrap:wrap;padding:.6rem 1rem 0}
+  .tab{padding:.5rem .9rem;border:none;background:var(--card);color:var(--mut);border-radius:8px 8px 0 0;cursor:pointer;font-size:.9rem}
+  .tab.on{background:var(--accent);color:#fff}
+  main{max-width:680px;margin:0 auto;padding:1rem}
+  .panel{display:none}
+  .panel.on{display:block}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding:.55rem 0;border-bottom:1px solid var(--line)}
+  .row label{color:var(--mut);font-size:.92rem;flex:1}
+  .row .v{flex:0 0 auto}
+  input[type=text],input[type=number],input[type=password]{background:#22262a;border:1px solid var(--line);color:var(--fg);
+       border-radius:7px;padding:.45rem .6rem;width:13rem;font-size:.95rem}
+  input[readonly]{opacity:.7}
+  select{background:#22262a;border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:.45rem .6rem}
+  .sw{position:relative;width:62px;height:26px}
+  .sw input{opacity:0;width:0;height:0}
+  .sl{position:absolute;inset:0;background:var(--err);border-radius:26px;transition:.2s;cursor:pointer}
+  .sl:before{content:"";position:absolute;height:20px;width:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;z-index:1}
+  .sl:after{content:"OFF";position:absolute;top:50%;right:7px;transform:translateY(-50%);font-size:.62rem;font-weight:700;color:#fff;letter-spacing:.04em}
+  .sw input:checked+.sl{background:var(--ok)}
+  .sw input:checked+.sl:before{transform:translateX(36px)}
+  .sw input:checked+.sl:after{content:"ON";right:auto;left:9px}
+  h3{color:var(--mut);font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;margin:1.3rem 0 .3rem}
+  .hint{color:var(--mut);font-size:.78rem;margin:.2rem 0 0}
+  .raw{color:var(--mut);font-size:.85em}
+  .savebar{position:fixed;bottom:0;left:0;right:0;background:#23272b;border-top:1px solid var(--line);
+       padding:.8rem 1rem;display:flex;align-items:center;gap:1rem;justify-content:flex-end}
+  .savebar #msg{margin-right:auto;font-size:.9rem}
+  .savebar #msg.ok{color:var(--ok)}.savebar #msg.err{color:var(--err)}
+  .btn{padding:.65rem 1.8rem;border:none;border-radius:9px;background:var(--accent);color:#fff;font-weight:600;font-size:1rem;cursor:pointer}
+  .btn:disabled{opacity:.5;cursor:default}
+  table.diag{width:100%;border-collapse:collapse;font-size:.9rem}
+  table.diag td{padding:.4rem 0;border-bottom:1px solid var(--line)}
+  table.diag td:first-child{color:var(--mut);width:45%}
+  pre#dbg{background:#16191c;border:1px solid var(--line);border-radius:8px;padding:.6rem;max-height:50vh;overflow:auto;font-size:.8rem;white-space:pre-wrap}
+</style>
+</head>
+<body>
+  <header>
+    <a href="/">&#8592; Dashboard</a>
+    <h1>WX setup</h1>
+    <a id="otaLink" href="#" style="margin-left:auto">OTA &#8599;</a>
+  </header>
+
+  <div class="tabs">
+    <button class="tab on" data-t="stanice">Station</button>
+    <button class="tab" data-t="sit">Network</button>
+    <button class="tab" data-t="system">System</button>
+    <button class="tab" data-t="stav">Status</button>
+    <button class="tab" data-t="debug">Debug</button>
+  </div>
+
+  <main>
+    <!-- STANICE -->
+    <section class="panel on" id="stanice">
+      <div class="row"><label>Altitude [m]<div class="hint">for sea-level pressure conversion</div></label><span class="v"><input type="number" id="altitude"></span></div>
+      <div class="row"><label>Callsign / name (CALLSIGN-ssid)</label><span class="v"><input type="text" id="call" maxlength="20"></span></div>
+      <div class="row"><label>Rain mm per pulse<div class="hint">default 0.13</div></label><span class="v"><input type="number" step="0.01" id="rainMmPulse"></span></div>
+      <div class="row"><label>Wind direction offset [°]</label><span class="v"><input type="number" id="windDirShift" min="0" max="359"></span></div>
+      <div class="row"><label>Temperature calibration [°C]</label><span class="v"><input type="number" step="0.01" id="tempCal"></span></div>
+    </section>
+
+    <!-- SIT -->
+    <section class="panel" id="sit">
+      <h3>MQTT broker <span class="hint">(change = restart)</span></h3>
+      <div class="row"><label>Broker IP</label><span class="v"><input type="text" id="mqttIp"></span></div>
+      <div class="row"><label>Broker port</label><span class="v"><input type="number" id="mqttPort" min="1" max="65535"></span></div>
+      <h3>APRS</h3>
+      <div class="row"><label>APRS enabled<div class="hint">sends as <b>CALLSIGN-ssid</b> from the Station tab</div></label><span class="v"><span class="sw"><input type="checkbox" id="aprsOn"><span class="sl"></span></span></span></div>
+      <div class="row"><label>APRS password</label><span class="v"><input type="password" id="aprsPass" autocomplete="new-password"></span></div>
+      <div class="row"><label>APRS coordinates</label><span class="v"><input type="text" id="aprsCoord" maxlength="18"></span></div>
+      <h3>windy.com</h3>
+      <div class="row"><label>API key</label><span class="v"><input type="password" id="windyKey" autocomplete="new-password"></span></div>
+      <div class="row"><label>Station ID <div class="hint">without pws- prefix, e.g. f052c6e5</div></label><span class="v"><input type="text" id="windyId" maxlength="32"></span></div>
+    </section>
+
+    <!-- SYSTEM -->
+    <section class="panel" id="system">
+      <h3>Web security</h3>
+      <div class="row"><label>Web password (Basic auth)<div class="hint" id="webHint">empty = auth disabled</div></label><span class="v"><input type="password" id="webPass" autocomplete="new-password"></span></div>
+      <div class="row"><label style="flex:1">To disable auth / recover a lost password, use the <b>P</b> command in the serial/telnet menu<div class="hint">the web page is locked behind this password, so clearing it must be done out-of-band</div></label></div>
+      <h3>Diagnostics</h3>
+      <table class="diag">
+        <tr><td>Firmware</td><td><span id="d_rev"></span> | PCB sw <span id="d_sw"></span> / hw <span id="d_pcb"></span></td></tr>
+        <tr><td>Uptime</td><td id="d_uptime"></td></tr>
+        <tr><td>MAC</td><td id="d_mac"></td></tr>
+        <tr><td>IP</td><td><span id="d_ip"></span> (<span id="d_link"></span> Mbps)</td></tr>
+        <tr><td>NTP UTC</td><td id="d_ntp"></td></tr>
+        <tr><td>Free heap</td><td id="d_heap"></td></tr>
+        <tr><td>MQTT</td><td><span id="d_mqtt"></span> &mdash; <code id="d_topic"></code></td></tr>
+        <tr><td>SPIFFS</td><td id="d_fs"></td></tr>
+      </table>
+    </section>
+
+    <!-- STAV -->
+    <section class="panel" id="stav">
+      <h3>Wind</h3>
+      <table class="diag">
+        <tr><td>Direction</td><td><span id="s_wdir">—</span> ° <span class="raw">(reg <span id="s_wdirRaw">—</span>, shift <span id="s_wdirShift">—</span>°)</span></td></tr>
+        <tr><td>RpmPin</td><td><span id="s_rpmPin">—</span></td></tr>
+        <tr><td>Speed last</td><td><span id="s_lastMps">—</span> m/s / <span id="s_lastKmh">—</span> km/h <span class="raw">(<span id="s_lastMs">—</span> ms)</span></td></tr>
+        <tr><td>Speed avg</td><td><span id="s_avgMps">—</span> m/s / <span id="s_avgKmh">—</span> km/h <span class="raw">(<span id="s_avgMs">—</span> ms, n=<span id="s_avgN">—</span>)</span></td></tr>
+        <tr><td>Max (period)</td><td><span id="s_pMaxMps">—</span> m/s / <span id="s_pMaxKmh">—</span> km/h <span class="raw">(<span id="s_pMaxMs">—</span> ms) <span id="s_pMaxUtc"></span></span></td></tr>
+        <tr><td>Max (lifetime)</td><td><span id="s_lMaxMps">—</span> m/s / <span id="s_lMaxKmh">—</span> km/h <span class="raw">(<span id="s_lMaxMs">—</span> ms) <span id="s_lMaxUtc"></span></span></td></tr>
+      </table>
+      <h3>Rain</h3>
+      <table class="diag">
+        <tr id="s_rainAdcRow"><td>RainPin ADC</td><td><span id="s_rainAdc">—</span> <span class="raw">(<span id="s_rainState">—</span>)</span></td></tr>
+        <tr><td>Today</td><td><span id="s_rainMM">—</span> mm <span class="raw">(count <span id="s_rainCount">—</span>, day <span id="s_rainDay">—</span>, <span id="s_mmPulse">—</span> mm/pulse)</span></td></tr>
+      </table>
+      <h3>Temperature / Humidity / Pressure</h3>
+      <table class="diag">
+        <tr id="s_htuHumRow"><td>HTU21D humidity</td><td><span id="s_htuHum">—</span> %</td></tr>
+        <tr id="s_htuTempRow"><td>HTU21D temperature</td><td><span id="s_htuTemp">—</span> °C <span class="raw">(raw <span id="s_htuTempRaw">—</span> °C)</span></td></tr>
+        <tr id="s_dewRow"><td>Dew point</td><td><span id="s_dew">—</span> °C</td></tr>
+        <tr id="s_pressRow"><td>BMP280 pressure (sea level)</td><td><span id="s_press">—</span> hPa <span class="raw">(raw <span id="s_pressRaw">—</span> hPa)</span></td></tr>
+        <tr id="s_bmpTempRow"><td>BMP280 temperature</td><td><span id="s_bmpTemp">—</span> °C <span class="raw">(raw <span id="s_bmpTempRaw">—</span> °C)</span></td></tr>
+        <tr id="s_dsRow"><td>DS18B20 temperature</td><td><span id="s_dsTemp">—</span> °C <span class="raw">(raw <span id="s_dsTempRaw">—</span> °C)<span id="s_dsMaster"></span></span></td></tr>
+        <tr><td>Temp calibration</td><td><span id="s_tempCal">—</span> °C</td></tr>
+      </table>
+      <p class="hint">Live read, refreshes every 5 s. <span class="raw">Grey = raw / debug values.</span></p>
+    </section>
+
+    <!-- DEBUG -->
+    <section class="panel" id="debug">
+      <div class="row"><label>Debug level (serial output)</label><span class="v">
+        <select id="debugLevel"><option value="0">OFF</option><option value="1">ON</option><option value="2">ON-frenetic</option></select>
+      </span></div>
+      <p class="hint">Capture runs only when level ≠ OFF. Confirm a level change with the Save button.</p>
+      <pre id="dbg">—</pre>
+    </section>
+  </main>
+
+  <div class="savebar">
+    <span id="msg"></span>
+    <button class="btn" id="saveBtn">Save</button>
+  </div>
+
+<script>
+  var $=function(id){return document.getElementById(id);};
+  $('otaLink').href = location.protocol+'//'+location.hostname+':82/update';
+
+  // tabs
+  document.querySelectorAll('.tab').forEach(function(t){
+    t.onclick=function(){
+      document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on');});
+      document.querySelectorAll('.panel').forEach(function(x){x.classList.remove('on');});
+      t.classList.add('on'); $(t.dataset.t).classList.add('on');
+      if(t.dataset.t==='debug') loadDebug();
+      if(t.dataset.t==='stav') loadStatus();
+    };
+  });
+
+  function setVal(id,v){var e=$(id); if(e) e.value=(v==null?'':v);}
+  function fmtUptime(s){
+    if(s<60)return s+' s'; if(s<3600)return Math.floor(s/60)+' min';
+    if(s<86400)return Math.floor(s/3600)+' h'; return Math.floor(s/86400)+' days';
+  }
+
+  function loadConfig(){
+    fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(c){
+      setVal('altitude',c.altitude); setVal('call',c.call); setVal('rainMmPulse',c.rainMmPulse);
+      setVal('windDirShift',c.windDirShift); setVal('tempCal',c.tempCal);
+      setVal('mqttIp',c.mqttIp); setVal('mqttPort',c.mqttPort);
+      $('aprsOn').checked=!!c.aprsOn; setVal('aprsCoord',c.aprsCoord); setVal('windyId',c.windyId);
+      $('debugLevel').value=c.debugLevel; dbgDirty=false;
+      // secrets: show placeholder if already set, leave blank
+      $('aprsPass').placeholder = c.aprsPassSet ? '•••••• (unchanged)' : 'not set';
+      $('windyKey').placeholder = c.windyKeySet ? '•••••• (unchanged)' : 'not set';
+      $('webPass').placeholder  = c.webAuthSet  ? '•••••• (unchanged)' : 'empty = disabled';
+      $('webHint').textContent  = c.webAuthSet ? 'auth ENABLED (password set)' : 'empty = auth disabled';
+      // diagnostics
+      $('d_rev').textContent=c.rev; $('d_sw').textContent=c.swRev; $('d_pcb').textContent=c.pcb;
+      $('d_uptime').textContent=fmtUptime(c.uptimeSec); $('d_mac').textContent=c.mac;
+      $('d_ip').textContent=c.ip; $('d_link').textContent=c.linkMbps; $('d_ntp').textContent=c.ntp;
+      $('d_heap').textContent=(c.heap/1024).toFixed(1)+' kB';
+      $('d_mqtt').textContent=c.mqttUp?'connected':'disconnected'; $('d_topic').textContent=c.mqttTopic;
+      $('d_fs').textContent=(c.fsUsed/1024).toFixed(1)+' / '+(c.fsTotal/1024).toFixed(1)+' kB';
+    });
+  }
+
+  function num(id){var v=$(id).value; return v===''?null:v;}
+  function save(){
+    var p=new URLSearchParams();
+    var fields=['altitude','call','rainMmPulse','windDirShift','tempCal','mqttIp','mqttPort',
+                'aprsCoord','windyId','debugLevel'];
+    fields.forEach(function(f){ var v=$(f).value; if(v!=='') p.append(f,v); });
+    p.append('aprsOn', $('aprsOn').checked?'1':'0');
+    // secrets only when user typed something
+    if($('aprsPass').value) p.append('aprsPass',$('aprsPass').value);
+    if($('windyKey').value) p.append('windyKey',$('windyKey').value);
+    if($('webPass').value) p.append('webPass',$('webPass').value);
+
+    var m=$('msg'); m.className=''; m.textContent='saving…'; $('saveBtn').disabled=true;
+    fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()})
+      .then(function(r){return r.json();})
+      .then(function(res){
+        m.className='ok'; m.textContent=res.msg||'saved';
+        if(res.reboot){ m.textContent='saved, device is restarting…'; setTimeout(function(){location.reload();},9000); }
+        else { $('saveBtn').disabled=false; $('aprsPass').value='';$('windyKey').value='';$('webPass').value=''; loadConfig(); }
+      })
+      .catch(function(){ m.className='err'; m.textContent='save error'; $('saveBtn').disabled=false; });
+  }
+  $('saveBtn').onclick=save;
+
+  // debug-level dropdown is a pending selection until Save; mark it dirty on change so the 2 s
+  // /api/debug poll (which reflects the device's actual level) doesn't revert it to OFF
+  var dbgDirty=false;
+  $('debugLevel').onchange=function(){dbgDirty=true;};
+
+  // STAV - full sensor + raw debug dump (only polls while the Status tab is open)
+  function fmt(v,d){return (v==null||isNaN(v))?'—':Number(v).toFixed(d);}
+  function txt(id,v){var e=$(id); if(e) e.textContent=v;}
+  function show(id,on){var e=$(id); if(e) e.style.display=on?'':'none';}
+  function loadStatus(){
+    if(!$('stav').classList.contains('on')) return;
+    fetch('/api/status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+      // wind
+      txt('s_wdir',d.windDir); txt('s_wdirShift',d.windDirShift);
+      txt('s_wdirRaw',('00000000'+(d.windDirRaw>>>0).toString(2)).slice(-8));   // 8-bit binary
+      txt('s_rpmPin',d.rpmPin);
+      txt('s_lastMps',fmt(d.lastMps,2)); txt('s_lastKmh',fmt(d.lastMps*3.6,2)); txt('s_lastMs',d.lastPulseMs);
+      txt('s_avgMps',fmt(d.avgMps,2)); txt('s_avgKmh',fmt(d.avgMps*3.6,2)); txt('s_avgMs',d.avgPulseMs);
+      txt('s_avgN',d.avgSum+'/'+d.avgCount);
+      txt('s_pMaxMps',fmt(d.periodMaxMps,2)); txt('s_pMaxKmh',fmt(d.periodMaxMps*3.6,2)); txt('s_pMaxMs',d.periodMaxPulseMs);
+      txt('s_pMaxUtc',d.periodMaxUtc?('@ '+d.periodMaxUtc):'');
+      txt('s_lMaxMps',fmt(d.lifeMaxMps,2)); txt('s_lMaxKmh',fmt(d.lifeMaxMps*3.6,2)); txt('s_lMaxMs',d.lifeMaxPulseMs);
+      txt('s_lMaxUtc',d.lifeMaxUtc?('@ '+d.lifeMaxUtc):'');
+      // rain
+      if(d.rainPinRaw>=0){ show('s_rainAdcRow',true); txt('s_rainAdc',d.rainPinRaw);
+        txt('s_rainState', d.rainPinRaw<1000?'false':(d.rainPinRaw<=2000?'true':'MAGNET not detected'));
+      } else show('s_rainAdcRow',false);
+      txt('s_rainMM',fmt(d.rainMM,2)); txt('s_rainCount',d.rainCount); txt('s_rainDay',d.rainDay); txt('s_mmPulse',fmt(d.mmInPulse,2));
+      txt('s_tempCal',fmt(d.tempCal,2));
+      // HTU21D
+      show('s_htuHumRow',d.hasHum); show('s_htuTempRow',d.hasHum); show('s_dewRow',d.hasHum);
+      if(d.hasHum){ txt('s_htuHum',fmt(d.htuHum,2)); txt('s_htuTempRaw',fmt(d.htuTempRaw,2));
+        txt('s_htuTemp',fmt(d.htuTempRaw+d.tempCal,2)); txt('s_dew',fmt(d.dewC,2)); }
+      // BMP280
+      show('s_pressRow',d.hasPress); show('s_bmpTempRow',d.hasPress);
+      if(d.hasPress){ txt('s_press',fmt(d.bmpPressSea,2)); txt('s_pressRaw',fmt(d.bmpPressRaw,2));
+        txt('s_bmpTemp',fmt(d.bmpTempRaw+d.tempCal,2)); txt('s_bmpTempRaw',fmt(d.bmpTempRaw,2)); }
+      // DS18B20
+      show('s_dsRow',d.hasDs18);
+      if(d.hasDs18){ txt('s_dsTempRaw',fmt(d.ds18TempRaw,2)); txt('s_dsTemp',fmt(d.ds18TempRaw+d.tempCal,2));
+        txt('s_dsMaster',' ← master'); }
+    }).catch(function(){});
+  }
+
+  // DEBUG live log (only polls while the Debug tab is open)
+  function loadDebug(){
+    if(!$('debug').classList.contains('on')) return;
+    fetch('/api/debug',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+      if(!dbgDirty) $('debugLevel').value=d.level;   // don't clobber an unsaved selection
+      var pre=$('dbg');
+      pre.textContent=(d.lines&&d.lines.length)?d.lines.join('\n'):'(no output – set the level and Save)';
+      pre.scrollTop=pre.scrollHeight;
+    }).catch(function(){});
+  }
+
+  loadConfig(); setInterval(loadStatus,5000); setInterval(loadDebug,2000);
+</script>
+</body>
+</html>

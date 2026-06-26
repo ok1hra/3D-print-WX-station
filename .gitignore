@@ -3,3 +3,7 @@ pdf
 tmp
 ods
 bin
+
+# build artifacts (published to gh-pages, not tracked on master)
+build/
+*.ino.esp32-poe.bin

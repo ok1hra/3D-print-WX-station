@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WX MQTT wall</title>
+  <link rel="stylesheet" type="text/css" href="/mqtt-wall.css">
+  <style>
+    :root{color-scheme:dark}
+    body{background:radial-gradient(circle at top,#1f2937 0%,#111827 48%,#030712 100%)!important;color:#e5e7eb!important}
+    a{color:#fbbf24}
+    .topbar{padding:10px 14px}
+    .topbar a{color:#fbbf24;text-decoration:none;margin-right:1rem}
+    #frame{background:rgba(17,24,39,.88)!important;color:#e5e7eb!important;border:1px solid rgba(148,163,184,.18);border-radius:18px}
+    #header{position:static!important;width:auto!important;margin:0 0 14px;padding:12px 14px!important;
+            background:linear-gradient(180deg,rgba(51,65,85,.96),rgba(30,41,59,.96))!important;border-radius:14px}
+    #header #topic-box{background:rgba(15,23,42,.82)!important;border:1px solid rgba(148,163,184,.22);border-radius:10px;padding:4px 8px}
+    #topic{background:transparent!important;color:#f9fafb!important;border:none!important;font-weight:700}
+    .messages{margin-top:0!important;background:rgba(15,23,42,.72)!important;border:1px solid rgba(148,163,184,.14);border-radius:14px;overflow:hidden}
+    .messages .message header,.messages .message header h2{color:#f8fafc!important;font-weight:400}
+    .messages .message p{color:#f8fafc!important;background-color:rgba(45,58,78,.98)!important;border:1px solid rgba(148,163,184,.24)}
+    .status,.status a,.status em,.status span,#footer,#footer p,#footer a{color:#d1d5db!important}
+    code{background:rgba(15,23,42,.95)!important;border-radius:6px;padding:2px 6px}
+  </style>
+</head>
+<body>
+  <div class="topbar"><a href="/">&#8592; Dashboard</a></div>
+  <div id="frame">
+    <div id="header">
+      <div id="topic-box">
+        <input type="text" id="topic" value="" title="Topic to subscribe">
+      </div>
+    </div>
+    <div id="toast"></div>
+    <section class="messages"></section>
+    <div id="footer">
+      <p class="status">
+        Client <code id="status-client" title="Client ID">?</code> is
+        <code id="status-state" class="connecting"><em>&bull;</em> <span>connecting...</span></code> to
+        <code id="status-host">?</code>
+        <em>via</em> MQTT Wall 0.3.0 (<a href="https://github.com/bastlirna/mqtt-wall">github</a>)
+      </p>
+    </div>
+  </div>
+
+  <script>
+  // The wall app (mqtt-wall.js) reads a global `config` and the DOM above. Broker/topic come
+  // from the station via /api/wallcfg, then we load the dependencies (jQuery, paho) and the
+  // wall app, in order. jQuery/paho are loaded from public CDNs (needs internet, same as before).
+  (function(){
+    function loadSeq(urls, done){
+      if(!urls.length){ if(done) done(); return; }
+      var s=document.createElement('script');
+      s.src=urls[0]; s.onload=function(){ loadSeq(urls.slice(1), done); };
+      s.onerror=function(){ document.getElementById('status-host').textContent='script load failed: '+urls[0]; };
+      document.body.appendChild(s);
+    }
+    fetch('/api/wallcfg',{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(cfg){
+        window.config = { server:{ uri:cfg.uri }, defaultTopic:cfg.topic };
+        document.getElementById('topic').value = cfg.topic || '';
+        loadSeq([
+          'https://code.jquery.com/jquery-2.1.4.min.js',
+          'https://code.jquery.com/color/jquery.color-2.1.2.min.js',
+          'https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js',
+          '/mqtt-wall.js'
+        ]);
+      })
+      .catch(function(){ document.getElementById('status-host').textContent='cannot read /api/wallcfg'; });
+  })();
+  </script>
+</body>
+</html>
