@@ -6,7 +6,7 @@ Flash mode:   dio
 Flash freq:   40m
 Flash size:   4MB
 SPIFFS off.:  0x290000
-SPIFFS size:  0x160000
+SPIFFS size:  0x170000
 
 Files:
 - bootloader.bin
