@@ -39,6 +39,8 @@ mosquitto_sub -h 54.38.157.134 -p 1883 -t "OK1HRA-8/WX/FreeHeap"
 HARDWARE ESP32-POE
 
 Changelog:
+20260626 - windy.com Station ID ('I' menu cmd, EEPROM 373-404) + WINDY link on main web page next to APRS
+20260626 - finish windy.com upload (API key in EEPROM 244-367 + 'K' menu cmd, fix units, local TLS client + setInsecure to save heap)
 20260626 - AI bugfix
 20231012 - mDNS support
 20230917 - windy.com (not work, probably low memory)
@@ -110,7 +112,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 const char* REV = "20260626";
 #define HWREVsw 8                   // software PCB version [7-8]
 // #define AJAX                        // enable ajax web server
-// #define WINDY                      // upload to windy.com (not work, probably low memory)
+#define WINDY                      // upload to windy.com PWS (set station API key with 'K' menu command). TLS client is local + setInsecure() to save heap
 // #define M_DNS                        // not work, but ArduinoOTA.setHostname() rewrite hostname
 #define OTAWEB                      // enable upload firmware via web
 #define DS18B20                     // external 1wire Temperature sensor
@@ -239,7 +241,7 @@ int i = 0;
 #endif
 #include <WiFiUdp.h>
 #include "EEPROM.h"
-#define EEPROM_SIZE 373   /* up to 512
+#define EEPROM_SIZE 405   /* up to 512
 0|Byte    1|128
 1|Char    1|A
 2|UChar   1|255
@@ -291,6 +293,7 @@ int i = 0;
 244-367 - 123 char API key windy.com
 368   - RainCount day-of-month (byte, 1-31; 255=unset)
 369-372 - RainCount (int 4) - persisted so a reboot does not lose today's rain
+373-404 - 32 char windy.com public Station ID (e.g. pws-f06ea43a) for the web-page link
 
 !! Increment EEPROM_SIZE #define !!
 
@@ -304,9 +307,16 @@ unsigned long WatchdogTimer=0;
 #if defined(WINDY)
   // #include <HTTPClient.h>
   #include <WiFiClientSecure.h>
-  const char*  server = "stations.windy.com";  // Server URL
-  WiFiClientSecure client;
+  const char*  windyServer = "stations.windy.com";  // Server URL
+  String WindyApiKey = "";                           // windy.com PWS station API key, stored in EEPROM 244-367 (empty = upload disabled)
+  String WindyStationId = "";                         // windy.com public Station ID, e.g. "pws-f06ea43a" (EEPROM 373-404), only for the web-page link
+  // The WiFiClientSecure (TLS) object is created locally inside GetHttpsWindy() so its
+  // ~30-40 kB of handshake buffers are released after every upload instead of being held
+  // permanently in RAM (the original global object was the main cause of "low memory").
 
+  // #define WINDY_VERIFY_CERT     // verify server certificate chain; needs several kB more heap during handshake.
+                                    // Default OFF (client.setInsecure()) to fit the limited ESP32 heap - weather telemetry is not security sensitive.
+  #if defined(WINDY_VERIFY_CERT)
   // ISRG Root X1 root .pem certificate for windy.com valid to Mon, 04 Jun 2035 11:04:38 GMT
   const char* rootCACertificate = \
   "-----BEGIN CERTIFICATE-----\n" \
@@ -340,6 +350,7 @@ unsigned long WatchdogTimer=0;
   "mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d\n" \
   "emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n" \
   "-----END CERTIFICATE-----\n";
+  #endif
 #endif
 
 #if defined(AJAX)
@@ -995,6 +1006,27 @@ void setup() {
   if(EEPROM.readByte(240)!=255){
     WindDirShift = EEPROM.readInt(240);
   }
+
+  // 244-367 - windy.com API key (123 chars max, 0xff terminated/unset)
+  // 373-404 - windy.com public Station ID (32 chars max, 0xff terminated/unset)
+  #if defined(WINDY)
+    WindyApiKey="";
+    for (int i=244; i<367; i++){
+      byte b = EEPROM.read(i);
+      if(b==0xff || b==0x00){
+        break;
+      }
+      WindyApiKey += char(b);
+    }
+    WindyStationId="";
+    for (int i=373; i<405; i++){
+      byte b = EEPROM.read(i);
+      if(b==0xff || b==0x00){
+        break;
+      }
+      WindyStationId += char(b);
+    }
+  #endif
 
   #if defined(WIFI)
     if(EnableSerialDebug>0){
@@ -1805,21 +1837,51 @@ void check_radio() {
 //-------------------------------------------------------------------------------------------------------
 void GetHttpsWindy(){
   #if defined(WINDY)
-  client.setCACert(rootCACertificate);
+  // no key configured -> nothing to upload (set it with the 'K' menu command)
+  if(WindyApiKey.length()==0){
+    if(EnableSerialDebug>0){
+      Prn(3, 1, "[windy] no API key set, skip upload");
+    }
+    return;
+  }
+
+  // The TLS client is created on the stack so all its handshake buffers (~30-40 kB) are
+  // freed the moment this function returns -> keeps the long-term free heap high.
+  WiFiClientSecure client;
+  #if defined(WINDY_VERIFY_CERT)
+    client.setCACert(rootCACertificate);   // authenticate server (costs extra heap)
+  #else
+    client.setInsecure();                  // skip cert validation -> lower memory footprint
+  #endif
   client.setTimeout(8);   // 8s timeout for TLS read/connect, avoid blocking on a stalled server
 
-  Prn(3, 1, "\n[https] Starting connection to server...");
-  if (!client.connect(server, 443)){
-    Prn(3, 1, "[https] Connection failed!");
+  Prn(3, 1, "\n[windy] connecting to "+String(windyServer)+" ...");
+  Prn(3, 1, "[windy] free heap before: "+String(ESP.getFreeHeap()));
+  if (!client.connect(windyServer, 443)){
+    Prn(3, 1, "[windy] connection failed!");
     client.stop();   // release TLS context/socket on failed connect (avoid leak)
   }else{
-    Prn(3, 1, "[https] Connected to server!");
-    // Make a HTTP request:
-    // https://stations.windy.com/pws/update/XXX-API-KEY-XXX?winddir=230&windspeedmph=12&windgustmph=12&tempf=70&rainin=0&baromin=29.1&dewptf=68.2&humidity=90
-    // client.println( "GET /api/get?name="+String(APRS_FI_NAME)+"&what=wx&apikey="+String(APRS_FI_APIKEY)+"&format=json HTTP/1.1" );
-
-    // client.println("GET /pws/update/API-KEY?winddir=230&windspeedmph=12&windgustmph=12&tempf=70&rainin=0&baromin=29.1&dewptf=68.2&humidity=90 HTTP/1.1");
-    client.println( "GET /pws/update/API-KEY?winddir="+String(WindDir)+"&windspeedmph="+String(WindSpeedAvgMPS)+"&windgustmph="+String(WindSpeedMaxPeriodMPS)+"&tempf="+String(TemperatureCelsius*1.8+32)+"&rainin="+String(RainTodayMM)+"&baromin="+String(PressureHPA)+"&dewptf="+String(DewPointCelsius*1.8+32)+"&humidity="+String(HumidityRelPercent)+" HTTP/1.1" );
+    Prn(3, 1, "[windy] connected!");
+    // windy.com PWS (Wunderground-style) protocol, imperial units:
+    // https://stations.windy.com/pws/update/API_KEY?winddir=&windspeedmph=&windgustmph=&tempf=&rainin=&baromin=&dewptf=&humidity=
+    //   windspeedmph/windgustmph : mph   = m/s / 0.44704
+    //   rainin                   : inch  = mm / 25.4
+    //   baromin                  : inHg  = hPa * 0.02953
+    //   tempf/dewptf             : F     = C * 1.8 + 32
+    String req = "GET /pws/update/" + WindyApiKey
+      + "?winddir="      + String(WindDir)
+      + "&windspeedmph=" + String(WindSpeedAvgMPS/0.44704, 1)
+      + "&windgustmph="  + String(WindSpeedMaxPeriodMPS/0.44704, 1)
+      + "&tempf="        + String(TemperatureCelsius*1.8+32, 1)
+      + "&rainin="       + String(RainTodayMM/25.4, 3)
+      + "&baromin="      + String(PressureHPA*0.02953, 2)
+      + "&dewptf="       + String(DewPointCelsius*1.8+32, 1)
+      + "&humidity="     + String(HumidityRelPercent, 0)
+      + " HTTP/1.1";
+    if(EnableSerialDebug>0){
+      Prn(3, 1, "[windy] "+req);
+    }
+    client.println(req);
     client.println("Host: stations.windy.com");
     client.println("Connection: close");
     client.println();
@@ -1827,21 +1889,19 @@ void GetHttpsWindy(){
     while (client.connected()) {
       String line = client.readStringUntil('\n');
       if (line == "\r") {
-        Prn(3, 1, "[https] headers received");
+        Prn(3, 1, "[windy] headers received");
         break;
       }
     }
 
-    // jsonString = "";
-    Prn(3, 0, "[https RX] ");
+    Prn(3, 0, "[windy RX] ");
     while (client.available()) {
       char c = client.read();
-      // jsonString = jsonString + String(c);
       Serial.write(c);
     }
 
     client.stop();
-    Prn(3, 1, "[https] stop");
+    Prn(3, 1, "[windy] stop");
   }
   #endif
 }
@@ -2428,6 +2488,100 @@ void CLI(){
         }else{
           Prn(OUT, 1," Out of range");
         }
+
+      // K - windy.com API key
+      #if defined(WINDY)
+      }else if(incomingByte==75){
+        Prn(OUT, 1,"  Get the station API key at https://stations.windy.com (My stations).");
+        Prn(OUT, 0,"  Paste windy API key (empty = disable) and press [");
+        if(TelnetAuthorized==true){
+          Prn(OUT, 1,"enter]");
+        }else{
+          Prn(OUT, 1,";]");
+        }
+        // The key can be up to 123 chars - too long for the shared InputByte[21] buffer,
+        // so read it straight into the String here (same CR/;/timeout rules as Enter()).
+        String keyBuf="";
+        bool br=false;
+        unsigned long EnterTimeout=millis();
+        Prn(OUT, 0,"> ");
+        while(br==false){
+          esp_task_wdt_reset();
+          if(millis()-EnterTimeout>30000){
+            Prn(OUT, 1," timeout");
+            keyBuf="";
+            break;
+          }
+          int rx=-1;
+          if(OUT==1 && TelnetServerClients[0] && TelnetServerClients[0].connected() && TelnetServerClients[0].available()){
+            rx=TelnetServerClients[0].read();
+          }else if(OUT==0 && Serial.available()){
+            rx=Serial.read();
+          }
+          if(rx<0){
+            continue;
+          }
+          EnterTimeout=millis();
+          if(rx==13 || rx==10 || rx==59){   // CR, LF or ;
+            br=true;
+          }else if(rx==127){                // backspace
+            if(keyBuf.length()>0){
+              keyBuf.remove(keyBuf.length()-1);
+            }
+          }else if(keyBuf.length()<123){
+            keyBuf += char(rx);
+          }
+        }
+        keyBuf.trim();
+        if(keyBuf.length()<=123){
+          WindyApiKey=keyBuf;
+          for (int i=0; i<123; i++){
+            if(i<(int)keyBuf.length()){
+              EEPROM.write(244+i, keyBuf[i]);
+            }else{
+              EEPROM.write(244+i, 0xff);
+            }
+          }
+          EEPROMcommit();
+          if(WindyApiKey.length()==0){
+            Prn(OUT, 1," windy upload disabled (key erased)");
+          }else{
+            Prn(OUT, 1," windy API key saved ("+String(WindyApiKey.length())+" chars)");
+          }
+        }else{
+          Prn(OUT, 1," key too long (max 123)");
+        }
+
+      // I - windy.com public Station ID (for the web-page link)
+      }else if(incomingByte==73){
+        Prn(OUT, 1,"  Find it on https://stations.windy.com (public URL windy.com/station/<ID>).");
+        Prn(OUT, 0,"  Enter windy Station ID, e.g. pws-f06ea43a (empty = remove) and press [");
+        if(TelnetAuthorized==true){
+          Prn(OUT, 1,"enter]");
+        }else{
+          Prn(OUT, 1,";]");
+        }
+        Enter();
+        String idBuf="";
+        for (int i=1; i<InputByte[0]+1; i++){
+          idBuf += char(InputByte[i]);
+        }
+        idBuf.trim();
+        WindyStationId=idBuf;
+        for (int i=0; i<32; i++){
+          if(i<(int)idBuf.length()){
+            EEPROM.write(373+i, idBuf[i]);
+          }else{
+            EEPROM.write(373+i, 0xff);
+          }
+        }
+        EEPROMcommit();
+        if(WindyStationId.length()==0){
+          Prn(OUT, 1," windy Station ID removed (web link hidden)");
+        }else{
+          Prn(OUT, 1," windy Station ID saved | https://www.windy.com/station/"+WindyStationId);
+        }
+      #endif
 
       // S
       }else if(incomingByte==83){
@@ -3168,6 +3322,20 @@ void ListCommands(int OUT){
     }
 
     Prn(OUT, 1, "      +  change MQTT broker IP | "+String(mqtt_server_ip[0])+"."+String(mqtt_server_ip[1])+"."+String(mqtt_server_ip[2])+"."+String(mqtt_server_ip[3])+":"+String(MQTT_PORT));
+    #if defined(WINDY)
+      Prn(OUT, 0,"      K  windy.com API key [");
+      if(WindyApiKey.length()>0){
+        Prn(OUT, 1, "SET, upload ON]");
+      }else{
+        Prn(OUT, 1, "empty, upload OFF]");
+      }
+      Prn(OUT, 0,"      I  windy.com Station ID (web link) [");
+      if(WindyStationId.length()>0){
+        Prn(OUT, 1, WindyStationId+"]");
+      }else{
+        Prn(OUT, 1, "empty]");
+      }
+    #endif
     // Prn(OUT, 0, String(mqtt_server_ip));
     // Prn(OUT, 0, ":");
     // Prn(OUT, 1, String(MQTT_PORT));
@@ -3862,6 +4030,14 @@ void http1(){
             webClient.print(YOUR_CALL);
             webClient.println(F("\" target=_blank>APRS</a>"));
           }
+          #if defined(WINDY)
+            // show the windy link only when actively uploading (API key set) and the public Station ID is known
+            if(WindyApiKey.length()>0 && WindyStationId.length()>0){
+              webClient.print(F(" | <a href=\"https://www.windy.com/station/"));
+              webClient.print(WindyStationId);
+              webClient.println(F("\" target=_blank>WINDY</a>"));
+            }
+          #endif
           #if defined(OTAWEB)
             webClient.print(F(" | <a href=\"http://"));
             webClient.println(ETH.localIP());
