@@ -33,8 +33,8 @@
   .gval small{font-size:.5em;color:var(--mut)}
   .card.wmaxc{grid-column:3;grid-row:1}     /* wind max 5 min: 3rd column, top */
   .card.wdirc{grid-column:3;grid-row:2}     /* wind direction: 3rd column, below */
-  .wdirc .arrow{font-size:2.6rem;line-height:1;margin-top:.15rem;transition:transform .6s ease;display:inline-block}
-  .wdirc .wd{color:var(--mut);font-size:.95rem;font-variant-numeric:tabular-nums}
+  .wdirc .arrow{font-size:4.2rem;line-height:1;margin-top:.35rem;transition:transform .6s ease;display:inline-block}
+  .wdirc .wd{color:var(--fg);font-size:1rem;font-variant-numeric:tabular-nums;text-transform:none}
   .btns{display:flex;gap:.8rem;margin:1.6rem 0 .5rem;flex-wrap:wrap;justify-content:center}
   .btn{padding:.75rem 1.8rem;border-radius:10px;background:var(--accent);color:#fff;text-decoration:none;
        font-weight:600;font-size:1rem;border:none;cursor:pointer}
@@ -74,11 +74,8 @@
       <div class="lbl" id="wmaxt" style="margin-top:.2rem"></div>
     </div>
     <div class="card wdirc">
-      <div class="lbl">Wind dir</div>
-      <div id="windDirVals">
-        <div class="arrow" id="arrow">&#8593;</div>
-        <div class="wd"><span id="wdir">--</span>&deg;</div>
-      </div>
+      <div class="lbl">Wind dir <span class="wd" id="wdirv"><span id="wdir">--</span>&deg;</span></div>
+      <div class="arrow" id="arrow">&#8593;</div>
     </div>
   </div>
 
@@ -159,10 +156,11 @@
     }
     setText('wdir', d.windDir);
     document.getElementById('arrow').style.transform='rotate('+(d.windDir||0)+'deg)';
-    // wind direction only meaningful when there is wind: hide just the arrow + azimuth value when
+    // wind direction only meaningful when there is wind: hide just the azimuth value + arrow when
     // calm (the "Wind dir" tile and its label stay in place)
     var calm = !(Number(d.lastMs)>0 || Number(d.windMaxMs)>0);
-    document.getElementById('windDirVals').classList.toggle('hide', calm);
+    document.getElementById('wdirv').classList.toggle('hide', calm);
+    document.getElementById('arrow').classList.toggle('hide', calm);
   }
 
   function apply(d){

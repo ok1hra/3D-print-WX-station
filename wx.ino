@@ -534,6 +534,7 @@ const long mapping[MappingRow][2] = { // ms > m/s
 // #include "FS.h"
 // #include "SD_MMC.h"
 #include "SPIFFS.h"                  // web pages live here (gzipped), uploaded via OTA filesystem image
+#include "esp_partition.h"           // read the on-flash SPIFFS partition geometry (size for the OTA image)
 bool FsMounted = false;             // true after a successful SPIFFS.begin()
 
 // ntp
@@ -1121,8 +1122,16 @@ void setup() {
     ArduinoOTA.begin();
   #endif
 
-  // mount SPIFFS (web pages); do not auto-format on failure so a missing FS is detectable
+  // mount SPIFFS (web pages). Try without formatting first so an already-good FS is kept as-is.
+  // If that fails (e.g. the on-flash partition table predates this build, so a pre-built spiffs.bin
+  // was sized for the wrong partition and its SPIFFS_USE_MAGIC_LENGTH magic no longer matches),
+  // format to the partition's ACTUAL geometry and mount empty. The PROGMEM fallback page then
+  // tells the operator to (re)upload spiffs.bin built for the real partition size reported by /api/config.
   FsMounted = SPIFFS.begin(false);
+  if(!FsMounted){
+    Serial.println("SPIFFS mount failed - formatting to the partition's real geometry");
+    FsMounted = SPIFFS.begin(true);
+  }
   if(FsMounted){
     Serial.print("SPIFFS mounted: total ");
     Serial.print(SPIFFS.totalBytes());
@@ -3868,7 +3877,14 @@ void handleApiConfig(){
   j += "\"mqttUp\":" + String(mqttClient.connected() ? "true":"false") + ",";
   j += "\"mqttTopic\":\"" + jsonEsc(String(YOUR_CALL) + "/WX/sub") + "\",";
   j += "\"fsTotal\":" + String(FsMounted ? SPIFFS.totalBytes() : 0) + ",";
-  j += "\"fsUsed\":" + String(FsMounted ? SPIFFS.usedBytes() : 0);
+  j += "\"fsUsed\":" + String(FsMounted ? SPIFFS.usedBytes() : 0) + ",";
+  // Real on-flash SPIFFS partition geometry (independent of mount state). Build the OTA spiffs.bin
+  // with mkspiffs -s <fsPartSize>; OTA never rewrites the partition table, so this is the truth.
+  {
+    const esp_partition_t* _sp = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+    j += "\"fsPartOff\":" + String(_sp ? (uint32_t)_sp->address : 0) + ",";
+    j += "\"fsPartSize\":" + String(_sp ? (uint32_t)_sp->size : 0);
+  }
   j += "}";
   webserver.sendHeader("Cache-Control", "no-store");
   webserver.send(200, "application/json", j);
