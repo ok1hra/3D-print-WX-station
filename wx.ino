@@ -196,15 +196,25 @@ float DewPointCelsius = 0;
   float DewPointCelsiusHTU21D = 0;
   float TemperatureCelsiusDS18B20 = 0;
 
-long RpmTimer[2]={0,3000};
-long RpmPulse = 987654321;
-long PeriodMinRpmPulse = 987654321;
+volatile long RpmTimer[2]={0,3000};
+volatile long RpmPulse = 987654321;
+volatile long PeriodMinRpmPulse = 987654321;
 String WindSpeedMaxPeriodUTC;
 long MinRpmPulse;
 String MinRpmPulseTimestamp;
 // unsigned int RpmSpeed = 0;
-unsigned long RpmAverage[2]={0,0};  // counter,sum time
-bool RpmInterrupt = false;
+volatile unsigned long RpmAverage[2]={0,0};  // counter,sum time
+volatile bool RpmInterrupt = false;
+volatile bool GustEvent = false;    // ISR flagged a new period-max (gust); loop timestamps + persists it
+volatile long RollBucketMin = 987654321;   // shortest pulse since WindTask last folded it into a bucket
+// All RPM state above is accumulated directly inside the IRAM-safe RPMcount() ISR and shared with
+// loop() (core 1) + WindTask (core 0). rpmMux serialises access; use *_ISR variants inside the ISR.
+portMUX_TYPE rpmMux = portMUX_INITIALIZER_UNLOCKED;
+// Rolling "last 5 min" wind max for the dashboard, kept by WindTask in 30s buckets. Deliberately
+// SEPARATE from WindSpeedMaxPeriodMPS (the publish-period max sent to MQTT/Windy/APRS), so the web
+// shows a true trailing-5-min peak independent of the 5-min publish reset.
+float WindRollMaxMps = 0;
+String WindRollMaxUtc = "";
 int InterruptDepth = 0;             // nesting counter for Interrupts(false/true)
 float TempCal=0;
 
@@ -221,9 +231,9 @@ long WdtTimer=0;
 
 // Software watchdog - recovers from failures the HW task-WDT cannot catch
 // (network stack death / socket- or heap-exhaustion while loop() keeps running and feeding the WDT).
-#define CONN_LOST_REBOOT_MS 900000UL   // 15 min without ETH+MQTT connectivity -> restart
+#define CONN_LOST_REBOOT_MS 900000UL   // 15 min without ETH connectivity -> restart (MQTT may be absent on an island LAN)
 #define HEAP_MIN_FREE 20000            // bytes; if free heap drops below this -> restart
-unsigned long ConnOkTimer=0;           // millis() of last healthy ETH+MQTT state
+unsigned long ConnOkTimer=0;           // millis() of last healthy ETH state
 
 byte InputByte[21];
 // #define Ser2net                  // Serial to ip proxy - DISABLE if board revision 0.3 or lower
@@ -376,6 +386,9 @@ String HTTP_req;
   #include <ESPAsyncWebServer.h>
   #include "src/AsyncElegantOTA_IPR/AsyncElegantOTA_IPR.h"   // vendored OTA: firmware + filesystem (SPIFFS) upload
   AsyncWebServer OTAserver(82);
+  // Server-Sent Events stream for the dashboard's live wind needle. Pushed from WindTask (see below),
+  // so the gauge tracks gusts in real time instead of polling. Runs on the existing async server.
+  AsyncEventSource events("/events");
   #define WEB_AUTH_USER "admin"          // fixed Basic-auth user for OTA + /setup writes
   bool WebAuthEnabled = false;           // enabled when WebAuthPassword is set (phase 5)
   String WebAuthPassword = "";           // stored in EEPROM (phase 5); empty = auth OFF
@@ -612,13 +625,16 @@ String AprsCoordinates;
 // Declaring them explicitly makes the build independent of auto-prototyping.
 void IRAM_ATTR RPMcount();
 void Interrupts(boolean ON);
+void WindTask(void *pv);            // dedicated wind-speed cache refresh, pinned to core 0
 void EEPROMcommit();
 void Watchdog();
 void RainCountStore();
 void RainCountRestore();
 void GetValue(bool readSlow = true);   // readSlow=false: fast web-cache refresh (skip DS18B20, no accumulator reset)
 unsigned long LiveCacheTimer = 0;      // drives the frequent dashboard cache refresh
-const unsigned long LiveCacheInterval = 15000;  // ms between fast cache refreshes
+unsigned long WindDirTimer = 0;        // drives the 1s wind-direction refresh (kept fresh for SSE push)
+const unsigned long LiveCacheInterval = 30000;  // ms between slow-sensor cache refreshes (temp/hum/press,
+                                                // ~2x/min). Wind dir+speed update far faster via /api/wind.
 void MqttPubValue();
 void check_radio();
 void GetHttpsWindy();
@@ -626,6 +642,7 @@ double Babinet(double Pz, double T);
 int MpsToMs(int MPS);
 float PulseToMetterBySecond(long PULSE);
 long AvgRpmPulse();
+float WindNowMps();                 // instantaneous wind speed, decays to 0 after >2s without a pulse
 byte Azimuth();
 void AzShift(int AZ);
 void AprsWxIgate();
@@ -668,6 +685,7 @@ void testFileIO(fs::FS &fs, const char * path);
 void handleRoot();                       // GET / - meteo dashboard (SPIFFS index.html, else PROGMEM fallback)
 void handleStatic();                     // serve any other SPIFFS file (gzip-aware), else 404
 void handleApiLive();                    // GET /api/live - cached meteo data as JSON (root polls this)
+void handleApiWind();                    // GET /api/wind - tiny fast-poll endpoint: live dir + speed
 void handleApiWallCfg();                 // GET /api/wallcfg - broker ws URI + topic for the MQTT wall page
 void handleSetupPage();                  // GET /setup - the settings page (auth-gated so the browser prompts)
 void handleApiStatus();                  // GET /api/status - full sensor + raw debug dump for Status tab
@@ -1123,6 +1141,10 @@ void setup() {
         request->send(200, "text/plain", "PSE QSY to /update");
     });
     AsyncElegantOTA_IPR.begin(&OTAserver, WEB_AUTH_USER, WebAuthPassword.c_str(), &WebAuthEnabled, REV);    // firmware + filesystem upload
+    // The dashboard is served from the sync server on :80, the SSE stream lives here on :82 (different
+    // origin), so allow cross-origin for the EventSource. The stream is public read-only wind data.
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+    OTAserver.addHandler(&events);
     OTAserver.begin();
   #endif
 
@@ -1211,6 +1233,7 @@ void setup() {
    }
    webserver.on("/", HTTP_GET, handleRoot);          // responsive meteo dashboard (SPIFFS or PROGMEM fallback)
    webserver.on("/api/live", HTTP_GET, handleApiLive); // cached meteo JSON for the dashboard
+   webserver.on("/api/wind", HTTP_GET, handleApiWind); // tiny fast-poll: live wind dir + speed
    webserver.on("/api/wallcfg", HTTP_GET, handleApiWallCfg); // broker ws URI + topic for /wall
    webserver.on("/setup", HTTP_GET, handleSetupPage);        // settings page (auth-gated)
    webserver.on("/api/config", HTTP_GET, handleApiConfig);   // /setup form data + diagnostics
@@ -1220,6 +1243,11 @@ void setup() {
    webserver.onNotFound(handleStatic);               // static SPIFFS files (gzip-aware), else 404
    webserver.begin();
    Serial.println("HTTP web server started on :80");
+
+   // Spawn the wind-speed cache task on core 0 (loop() runs on core 1). Keeps /api/live wind values
+   // fresh independently of how long loop() blocks in the publish cycle. Low priority, 4 kB stack.
+   xTaskCreatePinnedToCore(WindTask, "WindTask", 4096, NULL, 1, NULL, 0);
+   Serial.println("WindTask started on core 0");
 
 }
 
@@ -1265,30 +1293,37 @@ void loop() {
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
 
 void IRAM_ATTR RPMcount(){    // must be before attachInterrupt ;)
-  // Interrupts(false);
-  if(digitalRead(RpmPin)==0){   // because FALLING not work
-    // Serial.println("RPM");
-    RpmPulse = millis()-RpmTimer[0];
-    RpmTimer[0] = millis();
-    // Prn(3, 0,"*");
-    RpmInterrupt = true;
-    // if(RpmPulse<PeriodMinRpmPulse){
-    //   PeriodMinRpmPulse=RpmPulse;
-    //   WindSpeedMaxPeriodUTC=UtcTime(1);
-    // }
-    // if(RpmPulse<MinRpmPulse && needEEPROMcommit==false){
-    //   MinRpmPulseTimestamp=WindSpeedMaxPeriodUTC;
-    //   EEPROM.writeLong(169, RpmPulse);
-    //   EEPROM.writeString(173, MinRpmPulseTimestamp);
-    //   MinRpmPulse=RpmPulse;
-    //   needEEPROMcommit = true;
-    // }
-    // if(RpmPulse<RpmTimer[1]){
-    //   RpmAverage[1]=RpmAverage[1]+RpmPulse;
-    //   RpmAverage[0]++;
-    // }
+  // IRAM-safe ISR: reads the pin straight from the GPIO register (digitalRead is not guaranteed to
+  // stay in IRAM, which would crash if the ISR fired during a flash write) and does ALL min/max/avg
+  // accumulation here under rpmMux. Because every pulse is counted at the instant it arrives, gusts
+  // are captured even while loop() is busy (web/MQTT/TLS) and even during EEPROM commits - we no
+  // longer detach the interrupt for those. Only integer math + millis() (both IRAM-safe) run here;
+  // the timestamp + EEPROM persistence of the lifetime max stay in loop()/Watchdog (see GustEvent).
+  // RpmPin=39 lives in the GPIO 32-39 bank, read via GPIO_IN1_REG bit (pin-32).
+  if(((REG_READ(GPIO_IN1_REG) >> (RpmPin - 32)) & 0x1) != 0) return;   // pin not low -> ignore (FALLING confirm)
+
+  portENTER_CRITICAL_ISR(&rpmMux);
+  unsigned long now = millis();
+  long pulse = (long)(now - RpmTimer[0]);
+  RpmTimer[0] = now;
+  if(pulse < 10){                       // <10ms => >300km/h => electrical noise, treat as "no reading"
+    RpmPulse = 987654321;
+  }else{
+    RpmPulse = pulse;
+    if(pulse < PeriodMinRpmPulse){      // shorter period = faster wind = new period max (gust)
+      PeriodMinRpmPulse = pulse;
+      GustEvent = true;                 // loop() will timestamp it and persist a new lifetime max
+    }
+    if(pulse < RollBucketMin){          // feed the rolling 5-min window (WindTask buckets this)
+      RollBucketMin = pulse;
+    }
+    if(pulse < RpmTimer[1]){            // only pulses < 3s count into the running average (ignore calm)
+      RpmAverage[1] += pulse;
+      RpmAverage[0]++;
+    }
   }
-  // Interrupts(true);
+  RpmInterrupt = true;
+  portEXIT_CRITICAL_ISR(&rpmMux);
 }
 //-------------------------------------------------------------------------------------------------------
 void Interrupts(boolean ON){
@@ -1310,9 +1345,9 @@ void Interrupts(boolean ON){
   }
 }
 //-------------------------------------------------------------------------------------------------------
-// commit EEPROM with the wind interrupt disabled - the RPM ISR (digitalRead)
-// must not run while the flash is being written
-void EEPROMcommit(){ Interrupts(false); EEPROM.commit(); Interrupts(true); }
+// The RPM ISR is now fully IRAM-safe (register read + integer math, no flash-resident calls), so it
+// may keep firing while the flash is being written - no need to detach it around the commit anymore.
+void EEPROMcommit(){ EEPROM.commit(); }
 
 // Persist today's rain counter to EEPROM so a reboot (recovery restart / power loss)
 // does not lose the daily rain total. Writes only when the value changed (EEPROM wear).
@@ -1344,39 +1379,30 @@ void RainCountRestore(){
 //-------------------------------------------------------------------------------------------------------
 void Watchdog(){
 
-  // RPM - move from interrupt RPMcount() where it triggered a reset
-  if(RpmInterrupt==true){
-    if(RpmPulse<10){ // 300km/h max limit
-      RpmPulse=987654321;
-    }
-    if(RpmPulse<PeriodMinRpmPulse){
-      PeriodMinRpmPulse=RpmPulse;
-      WindSpeedMaxPeriodUTC=UtcTime(1);
-      // Prn(3, 0,"1");
-    }
-    if(RpmPulse<MinRpmPulse && needEEPROMcommit==false){
-      MinRpmPulseTimestamp=WindSpeedMaxPeriodUTC;
-      EEPROM.writeLong(169, RpmPulse);
+  // RPM - the min/max/avg accumulation now happens inside the IRAM-safe RPMcount() ISR (so no pulse
+  // is lost while loop() is busy). Here we only react to a gust flagged by the ISR: stamp the time of
+  // the new period max and, if it also beats the lifetime record, persist it to EEPROM. The ISR can
+  // keep firing during EEPROMcommit() because it is fully IRAM-safe, so we no longer detach it.
+  if(GustEvent==true){
+    portENTER_CRITICAL(&rpmMux);
+    GustEvent = false;
+    long periodMin = PeriodMinRpmPulse;   // shortest period seen this window = the gust
+    portEXIT_CRITICAL(&rpmMux);
+
+    WindSpeedMaxPeriodUTC = UtcTime(1);
+    if(periodMin < MinRpmPulse && needEEPROMcommit==false){
+      MinRpmPulseTimestamp = WindSpeedMaxPeriodUTC;
+      MinRpmPulse = periodMin;
+      EEPROM.writeLong(169, MinRpmPulse);
       EEPROM.writeString(173, MinRpmPulseTimestamp);
-      MinRpmPulse=RpmPulse;
       needEEPROMcommit = true;
-      // Prn(3, 0,"2");
-    }
-    if(RpmPulse<RpmTimer[1]){
-      RpmAverage[1]=RpmAverage[1]+RpmPulse;
-      RpmAverage[0]++;
-      // Prn(3, 0,"3");
     }
     if(needEEPROMcommit==true){
-      Interrupts(false);
       needEEPROMcommit = false;
       EEPROMcommit();
       MqttPubString("WindSpeedMax-mps", String(PulseToMetterBySecond(MinRpmPulse)), true);
       MqttPubString("WindSpeedMax-utc", String(MinRpmPulseTimestamp), true);
-      Interrupts(true);
-      // Prn(3, 1,"4");
     }
-    RpmInterrupt = false;
   }
 
 
@@ -1393,17 +1419,18 @@ void Watchdog(){
   // Software watchdog - recover from failures the HW task-WDT can't catch.
   // The HW WDT only detects a frozen loop()/CPU. The real long-term failure mode is the
   // network stack dying (socket/heap exhaustion) while loop() keeps running and feeding the WDT.
-  // Here we restart if ETH+MQTT connectivity has been lost too long, or free heap is critically low.
+  // Here we restart if ETH connectivity has been lost too long, or free heap is critically low.
+  // (MQTT loss alone does NOT trigger a restart - the station must keep running on an island LAN.)
   {
     static unsigned long ConnLastCheck=0;
     if(millis()-ConnLastCheck > 5000){   // check every 5s
       ConnLastCheck=millis();
-      if(eth_connected==true && mqttClient.connected()==true){
-        ConnOkTimer=millis();   // healthy
+      if(eth_connected==true){
+        ConnOkTimer=millis();   // healthy - ETH link/IP is what we watch (MQTT may be intentionally absent on an island LAN)
       }
       bool recoveryReboot=false;
       if(ConnOkTimer>0 && millis()-ConnOkTimer > CONN_LOST_REBOOT_MS){
-        Prn(3, 1,"** Software watchdog: ETH/MQTT connectivity lost too long - restart **");
+        Prn(3, 1,"** Software watchdog: ETH connectivity lost too long - restart **");
         recoveryReboot=true;
       }
       if(ESP.getFreeHeap() < HEAP_MIN_FREE){
@@ -1509,28 +1536,38 @@ void Watchdog(){
     #endif
   }
 
-  // Publish cycle (every MeasureTimer[1], default 5 min): full measurement incl. DS18B20, then
-  // publish to MQTT/APRS/Windy, then reset the wind accumulators for the next period.
-  if(millis()-MeasureTimer[0]>MeasureTimer[1] && eth_connected==true && mqttClient.connected()==true){
-    Interrupts(false);
+  // Measurement cycle (every MeasureTimer[1], default 5 min): full measurement incl. DS18B20, then
+  // reset the wind accumulators for the next period. The cycle now runs on ETH alone (no longer gated
+  // on MQTT), so the external DS18B20 temperature refresh, the today's-rain EEPROM persistence and the
+  // period-max reset all keep working in an offline / island LAN. Only the network uploads (MQTT/APRS/
+  // windy) stay gated on the MQTT connection - used here as an "internet is up" proxy so AprsWxIgate()/
+  // GetHttpsWindy() don't stall the loop trying to open a socket that can't connect.
+  if(millis()-MeasureTimer[0]>MeasureTimer[1] && eth_connected==true){
+    // No more Interrupts(false) around this block: the IRAM-safe ISR keeps accumulating gusts through
+    // the (multi-second) windy.com TLS upload and the DS18B20 read, so strong-wind peaks are no
+    // longer lost during the cycle.
     // digitalWrite(EnablePin,1);
 
-    GetValue(true);
-    MqttPubValue();
-    AprsWxIgate();
-    GetHttpsWindy();
+    GetValue(true);   // full read incl. DS18B20 - runs every cycle regardless of MQTT
+
+    if(mqttClient.connected()==true){   // network uploads only when connected (internet up)
+      MqttPubValue();
+      AprsWxIgate();
+      GetHttpsWindy();
+      MqttPubString("FreeHeap", String(ESP.getFreeHeap()), false);   // monitor heap trend (leak/fragmentation)
+    }
 
     RainCountStore();   // persist today's rain counter (only writes EEPROM when it changed)
-    MqttPubString("FreeHeap", String(ESP.getFreeHeap()), false);   // monitor heap trend (leak/fragmentation)
 
     // reset wind accumulators AFTER publishing so the period average/max span the whole interval
+    portENTER_CRITICAL(&rpmMux);
     RpmAverage[0]=0;
     RpmAverage[1]=0;
     PeriodMinRpmPulse=987654321;
+    portEXIT_CRITICAL(&rpmMux);
     WindSpeedMaxPeriodUTC="";
     MeasureTimer[0]=millis();
     LiveCacheTimer=millis();   // fresh cache, no need for a fast refresh right after a full one
-    Interrupts(true);
     // digitalWrite(EnablePin,0);
   }
 
@@ -1539,6 +1576,21 @@ void Watchdog(){
   if(millis()-LiveCacheTimer > LiveCacheInterval && eth_connected==true){
     GetValue(false);
     LiveCacheTimer=millis();
+  }
+
+  // Wind direction refresh (1s). Azimuth() bit-bangs the shift register on core 1 only, so WindTask
+  // (core 0) never touches it - it just reads the resulting atomic int WindDir for the SSE push. A
+  // mechanical vane moves slowly, so 1s is plenty and the value stays current for the live needle.
+  if(millis()-WindDirTimer > 1000){
+    Azimuth();
+    WindDirTimer=millis();
+    // Timestamp the rolling 5-min max whenever it reaches a new high (UtcTime is safe here on core 1,
+    // not in WindTask). When the peak ages out of the window the value drops and a later gust re-stamps.
+    static float lastRoll = -1;
+    if(WindRollMaxMps > lastRoll + 0.05){
+      WindRollMaxUtc = UtcTime(1);
+    }
+    lastRoll = WindRollMaxMps;
   }
 
   if(!TelnetServerClients[0].connected() && FirstListCommands==false){
@@ -1910,10 +1962,97 @@ float PulseToMetterBySecond(long PULSE){
 //-------------------------------------------------------------------------------------------------------
 // average pulse length over the period, safe against division by zero
 long AvgRpmPulse(){
-  if(RpmAverage[0]>0){
-    return RpmAverage[1]/RpmAverage[0];
+  portENTER_CRITICAL(&rpmMux);
+  unsigned long cnt = RpmAverage[0];
+  unsigned long sum = RpmAverage[1];
+  portEXIT_CRITICAL(&rpmMux);
+  if(cnt>0){
+    return sum/cnt;
   }else{
     return 0;
+  }
+}
+//-------------------------------------------------------------------------------------------------------
+// Instantaneous wind speed for the live display. RpmPulse holds the last pulse interval, which would
+// otherwise read as a fixed speed forever once the wind drops, so we decay to 0 after >2s with no new
+// pulse (matches PulseToMetterBySecond's own >2000ms "no wind" cutoff). pow() runs outside the lock.
+float WindNowMps(){
+  portENTER_CRITICAL(&rpmMux);
+  long pulse = RpmPulse;
+  long t0 = RpmTimer[0];
+  portEXIT_CRITICAL(&rpmMux);
+  if((long)(millis() - (unsigned long)t0) > 2000) return 0;
+  return PulseToMetterBySecond(pulse);
+}
+//-------------------------------------------------------------------------------------------------------
+// WindTask - pinned to core 0 (PRO_CPU, the lwIP/EMAC core). With Ethernet there is no WiFi driver
+// task hogging core 0, so there is spare capacity here. It recomputes the live wind-speed cache
+// (period average + period max in m/s) that /api/live serves, AND pushes the instantaneous wind to
+// the dashboard via the /events SSE stream so the speed needle tracks gusts in real time - all
+// independently of how long loop() on core 1 is blocked in a slow publish (windy.com TLS, DS18B20,
+// MQTT). It only reads the ISR accumulators under rpmMux and the atomic int WindDir; it deliberately
+// does NOT touch EEPROM, MQTT, I2C, the shift register, or any shared String, so there is no
+// cross-core race. Crucially WindTask is non-critical to measurement: the gust accumulation lives in
+// the ISR, so even if this task stalled completely no wind data would be lost. Low priority so it
+// never starves the network stack; not subscribed to the task-WDT.
+// Rolling-window max: one min-pulse slot per second over a 300s window = exactly the trailing 5.0 min.
+#define WMAX_WINDOW_S 300
+void WindTask(void *pv){
+  unsigned long lastPush = 0;
+  static long secMin[WMAX_WINDOW_S];
+  for(int i=0;i<WMAX_WINDOW_S;i++) secMin[i] = 987654321;
+  unsigned long lastSec = millis()/1000;
+  for(;;){
+    bool pulse;
+    long avg, periodMin, rollRaw;
+    portENTER_CRITICAL(&rpmMux);
+    pulse = RpmInterrupt; RpmInterrupt = false;   // consume the "a pulse arrived" signal from the ISR
+    avg = (RpmAverage[0]>0) ? (long)(RpmAverage[1]/RpmAverage[0]) : 0;
+    periodMin = PeriodMinRpmPulse;
+    rollRaw = RollBucketMin; RollBucketMin = 987654321;   // take + reset the inter-fold minimum
+    portEXIT_CRITICAL(&rpmMux);
+
+    WindSpeedAvgMPS = PulseToMetterBySecond(avg);
+    WindSpeedMaxPeriodMPS = (periodMin < 987654321) ? PulseToMetterBySecond(periodMin) : 0;
+
+    // Exact 5.0-min trailing max (dashboard only, independent of the publish-period reset): a circular
+    // buffer holding the strongest gust (smallest pulse) of each of the last 300 seconds. As wall time
+    // advances we clear the seconds just entered, fold the ISR's running min into the current second,
+    // then take the min across the whole window. 1s resolution => window is exactly 300s.
+    unsigned long nowSec = millis()/1000;
+    if(nowSec != lastSec){
+      unsigned long steps = nowSec - lastSec;
+      if(steps > WMAX_WINDOW_S) steps = WMAX_WINDOW_S;
+      for(unsigned long k=1;k<=steps;k++) secMin[(lastSec+k)%WMAX_WINDOW_S] = 987654321;
+      lastSec = nowSec;
+    }
+    long idx = nowSec % WMAX_WINDOW_S;
+    if(rollRaw < secMin[idx]) secMin[idx] = rollRaw;
+    long rmin = 987654321;
+    for(int i=0;i<WMAX_WINDOW_S;i++) if(secMin[i] < rmin) rmin = secMin[i];
+    WindRollMaxMps = (rmin < 987654321) ? PulseToMetterBySecond(rmin) : 0;
+
+    #if defined(OTAWEB)
+    // Push to the dashboard SSE stream: immediately on a new pulse (capped to 10 Hz so a storm of
+    // pulses can't flood clients) plus a 1s keepalive. Only numeric fields go here - all 32-bit, safe
+    // to read across cores; the String timestamp stays in /api/live (loop context). Skip when no one
+    // is connected so calm weather costs nothing.
+    unsigned long nowMs = millis();
+    bool keepalive = (nowMs - lastPush >= 1000);
+    bool onPulse   = (pulse && (nowMs - lastPush >= 100));
+    if((onPulse || keepalive) && events.count() > 0){
+      lastPush = nowMs;
+      String j; j.reserve(96);
+      j  = "{";
+      j += "\"lastMs\":" + String(WindNowMps(), 1) + ",";
+      j += "\"windMaxMs\":" + String(WindRollMaxMps, 1) + ",";   // rolling 5-min max (dashboard)
+      j += "\"windDir\":" + String(WindDir);
+      j += "}";
+      events.send(j.c_str(), "wind", nowMs);
+    }
+    #endif
+
+    vTaskDelay(pdMS_TO_TICKS(50));   // 20 Hz tick: a new pulse is reflected within ~50ms
   }
 }
 //-------------------------------------------------------------------------------------------------------
@@ -3488,7 +3627,9 @@ void handleApiLive(){
   j += "\"pressHPa\":" + String(PressureHPA, 1) + ",";
   j += "\"windDir\":" + String(WindDir) + ",";
   j += "\"windAvgMs\":" + String(WindSpeedAvgMPS, 1) + ",";
-  j += "\"windMaxMs\":" + String(WindSpeedMaxPeriodMPS, 1) + ",";
+  j += "\"windMaxMs\":" + String(WindRollMaxMps, 1) + ",";        // rolling 5-min max (dashboard)
+  j += "\"periodMaxUtc\":\"" + WindRollMaxUtc + "\",";
+  j += "\"lastMs\":" + String(WindNowMps(), 1) + ",";
   j += "\"rainMM\":" + String(RainTodayMM, 2) + ",";
   j += "\"rainCount\":" + String(RainCount) + ",";
   // which sensor cards are meaningful on this unit
@@ -3508,6 +3649,24 @@ void handleApiLive(){
     j += "\"windyId\":\"\",";
   #endif
   j += "\"aprs\":" + String(AprsON ? "true" : "false");
+  j += "}";
+  webserver.sendHeader("Cache-Control", "no-store");
+  webserver.send(200, "application/json", j);
+}
+
+// GET /api/wind - small, frequently polled endpoint so the dashboard tracks wind dynamics. Wind
+// direction is read live from the shift register here (Azimuth() runs on core 1 like every HTTP
+// handler, so there is no race with the ISR or WindTask); the speed values come from the cache
+// WindTask refreshes every 250 ms. lastMs is the instantaneous gust so a spike shows up at once.
+void handleApiWind(){
+  WindDir = Azimuth();   // refresh direction live (side effect: updates the global via AzShift)
+  String j; j.reserve(160);
+  j  = "{";
+  j += "\"windDir\":" + String(WindDir) + ",";
+  j += "\"windAvgMs\":" + String(WindSpeedAvgMPS, 1) + ",";
+  j += "\"windMaxMs\":" + String(WindRollMaxMps, 1) + ",";        // rolling 5-min max (dashboard)
+  j += "\"periodMaxUtc\":\"" + WindRollMaxUtc + "\",";
+  j += "\"lastMs\":" + String(WindNowMps(), 1);
   j += "}";
   webserver.sendHeader("Cache-Control", "no-store");
   webserver.send(200, "application/json", j);

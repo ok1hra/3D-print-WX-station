@@ -22,6 +22,21 @@ Sensors supported (compile-time `#define`, auto-detected at boot): HTU21D
 (humidity + temperature), BMP280 (pressure + temperature), DS18B20 (external
 temperature, used as master when present), optional RF69 radio sensor.
 
+### Wind measurement architecture (dual-core)
+
+Wind-speed pulses from the anemometer are counted in an **IRAM-safe interrupt
+(ISR)** that does all min / max / average accumulation itself, under a spinlock.
+Because the ISR runs on every pulse regardless of what `loop()` is doing, **no
+gust is lost** — not while the main loop is busy serving the web, MQTT or the
+multi-second windy.com TLS upload, and not during EEPROM writes (the interrupt is
+no longer detached for those).
+
+A dedicated **`WindTask` pinned to core 0** (the Ethernet/lwIP core, which has
+spare capacity because there is no Wi-Fi driver task) refreshes the live wind
+cache and pushes it to the dashboard. It is non-critical to measurement: the gust
+accumulation lives in the ISR, so even if the task stalled, no data would be lost.
+This makes high-wind capture and real-time web display fully independent.
+
 ---
 
 ## 2. Network services & ports
@@ -30,18 +45,56 @@ temperature, used as master when present), optional RF69 radio sensor.
 |---|---|---|
 | Web dashboard + setup | 80 | `/` dashboard, `/setup` config, `/wall` MQTT wall |
 | OTA update (firmware + filesystem) | 82 | `http://<ip>:82/update` |
+| Live-wind SSE stream | 82 | `/events` — Server-Sent Events, CORS-enabled (dashboard needle) |
 | Telnet console | 23 | key-authenticated (key printed on serial at boot) |
 | MQTT | broker-defined | default broker `54.38.157.134:1883` |
 
 mDNS is advertised, so the station is also reachable by hostname `WX-<CALLSIGN>`.
+
+All web services (dashboard, setup, OTA, SSE) are served by the station itself, so
+the UI works on an **isolated LAN without internet** — see §3.
 
 ---
 
 ## 3. Web interface
 
 ### Dashboard `/`
-Public responsive meteo page. Polls `/api/live` every 5 s (server-side cache
-refreshes every 15 s).
+Public responsive meteo page, served from SPIFFS. Layout: large temperature, a
+sensor grid (humidity, pressure, rain, dew point, **Wind max 5 min**, **wind
+direction**) and a **wind-speed gauge** with a coloured needle.
+
+Live wind is **pushed** from the firmware over **Server-Sent Events** (`/events`
+on port 82) by the core-0 `WindTask`: a new pulse triggers a push (rate-limited to
+≤10 Hz) plus a 1 s keep-alive, so the gauge needle and direction track gusts
+within ~50–100 ms without polling. If the SSE stream is unavailable the page
+transparently falls back to polling `/api/wind` every 2 s. The slower sensors
+(temperature, humidity, pressure, rain) refresh from `/api/live` every 30 s.
+
+- **Gauge** — 0–25 m/s, scale labels every 5 m/s, three colour zones (green ≤8,
+  orange ≤14, red >14 m/s). The needle (and its colour) follow the instantaneous
+  speed. Above 25 m/s the needle **pins at full scale** but the numeric read-out
+  still shows the **true value** (e.g. 28.0 m/s); the same is true for *Wind max
+  5 min*.
+- **Wind max 5 min** — a true rolling maximum over the trailing **exactly 5.0 min**
+  (1-second resolution), computed independently of the publish cycle. It is
+  therefore **decoupled** from the `WindSpeedMaxPeriod-mps` value sent to MQTT /
+  APRS / windy.com (which resets every publish cycle).
+
+#### Offline / island operation
+The dashboard is fully **local** and works on a LAN with **no internet**: the page,
+`/api/live`, `/api/wind` and the `/events` push all come from the station. The
+measurement path is **decoupled from MQTT** — the 5-min measurement cycle runs on
+the ETH link alone, so the **DS18B20** external temperature (every 5 min), the
+today's-rain EEPROM persistence and the period-max reset all keep working without a
+broker. The software watchdog reboots only on **ETH** loss, never on MQTT loss, so
+an island station stays up. Only genuinely internet-dependent extras degrade:
+
+- **NTP clock** — without internet `configTime`/NTP can't sync, so timestamps
+  (UTC, *Wind max* time) show `n/a`; all measured values still update.
+- **External links** (aprs.fi, windy.com) and the **uploads** (MQTT / APRS /
+  windy) need connectivity; their absence does not affect the live dashboard.
+
+The station needs a valid IP on the LAN (local DHCP or a static address).
 
 ### Setup `/setup`
 Tabbed configuration and diagnostics page. Optionally protected by HTTP Basic
@@ -63,7 +116,9 @@ auth (see §6). Tabs:
 ### HTTP API
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /api/live` | public | cached meteo JSON (dashboard) |
+| `GET /api/live` | public | cached meteo JSON (dashboard, 30 s) |
+| `GET /api/wind` | public | small wind JSON: live dir + speed + rolling 5-min max (fast-poll fallback) |
+| `GET /events` (port 82) | public | SSE live-wind stream pushed by `WindTask` (dir, speed, rolling max) |
 | `GET /api/status` | gated | full sensor + raw debug dump (Status tab) |
 | `GET /api/config` | gated | settings + diagnostics (secrets masked) |
 | `POST /api/config` | gated | save settings |
@@ -74,30 +129,41 @@ auth (see §6). Tabs:
 
 ## 4. Data publishing — intervals
 
-All channels are driven by a single **publish cycle** (`wx.ino`, default
-**300 000 ms = 5 min**, configurable via the telnet/serial `x` command). When the
-cycle fires (ETH + MQTT online) it measures, then publishes to MQTT, APRS and
-windy.com together.
+All channels are driven by a single **measurement cycle** (`wx.ino`, default
+**300 000 ms = 5 min**, configurable via the telnet/serial `x` command). The cycle
+fires on the **ETH link alone** — it measures (incl. DS18B20), persists today's
+rain and resets the period accumulators **regardless of MQTT**. The network uploads
+(MQTT, APRS, windy.com) run within the same cycle **only when MQTT is connected**
+(used as an "internet is up" proxy), so an offline station still measures and
+refreshes everything locally.
 
 | Channel | Interval | Trigger | Payload |
 |---|---|---|---|
-| **MQTT** | 5 min (configurable `x`) | publish cycle | all meteo values + FreeHeap |
+| **MQTT** | 5 min (configurable `x`) | measurement cycle, if MQTT connected | all meteo values + FreeHeap |
 | **MQTT on-demand** | immediate | message to `CALLSIGN/WX/get` (any payload) | meteo values (`MqttPubValue()`) — not APRS/windy |
 | **MQTT RF sensor** | on packet (poll ~2 s) | RF69 data received | RF temperature / humidity / battery |
 | **MQTT ip/mac** | once per (re)connect | broker connect | IP + MAC (retained) |
-| **APRS** | 5 min | publish cycle | one WX frame |
-| **windy.com** | 5 min | publish cycle | PWS upload (only if API key set) |
-| **Dashboard `/api/live`** | cache 15 s, browser poll 5 s | `GetValue(false)` (fast sensors, no DS18B20) | temperature, humidity, wind, pressure, rain |
+| **APRS** | 5 min | measurement cycle, if MQTT connected | one WX frame |
+| **windy.com** | 5 min | measurement cycle, if MQTT connected | PWS upload (only if API key set) |
+| **DS18B20 / rain persist / period reset** | 5 min | measurement cycle (ETH only) | runs offline too — independent of MQTT |
+| **Dashboard live wind** | push via SSE `/events`: on-pulse ≤10 Hz + 1 s keep-alive | core-0 `WindTask` | instantaneous speed, direction, rolling 5-min max |
+| **Dashboard `/api/live`** | cache 30 s, browser poll 30 s | `GetValue(false)` (fast sensors, no DS18B20) | temperature, humidity, pressure, rain (+ wind snapshot) |
 | **Setup → Status `/api/status`** | 5 s (tab open) | live read | all values incl. raw / debug |
 
 **Notes**
 
 - APRS and windy.com upload **only** in the 5-min cycle; `/get` republishes MQTT
   only, it does not trigger APRS/windy.
-- Dashboard effective latency is ~15 s (cache refresh), except at the 5-min full
-  measurement; the **Status** tab is the only truly 5 s live view.
-- The whole cycle is gated on `eth_connected` **and** `mqttClient.connected()` —
-  with no MQTT connection the cycle (and therefore APRS/windy) does not run.
+- Dashboard **wind** (speed, direction, rolling max) is real-time via SSE push;
+  the other sensors have ~30 s latency (fast cache). The **Status** tab is a 5 s
+  full live view.
+- `WindSpeedMaxPeriod-mps` (MQTT/APRS/windy) is the max of the **current publish
+  period** (resets every cycle); the dashboard *Wind max 5 min* is a separate
+  rolling 5-min value — the two will usually differ.
+- The cycle runs on `eth_connected`; only the MQTT/APRS/windy uploads are gated on
+  `mqttClient.connected()`. With no broker the station still measures, refreshes
+  DS18B20, persists rain and resets the period — only the uploads pause (see §3,
+  offline operation).
 
 ### MQTT topics (base `CALLSIGN/WX/...`, published every cycle)
 `utc`, `WindDir-azimuth`, `RainCount`, `RainToday-mm`, `WindSpeedAvg-mps`,
@@ -162,7 +228,7 @@ Target board: **Olimex ESP32-POE**, ESP32 Arduino core 2.0.14.
 arduino-cli compile --fqbn esp32:esp32:esp32-poe .
 ```
 
-- Firmware baseline footprint: ~92 % flash, ~18 % static RAM.
+- Firmware baseline footprint: ~93 % flash, ~18 % static RAM.
 - The web UI lives in SPIFFS (`data/`). Changes to `data/*.html` require a
   **filesystem (SPIFFS) upload** — re-flashing only the firmware `.bin` does not
   update the web pages. Use the OTA page (`:82/update`, filesystem image) or the

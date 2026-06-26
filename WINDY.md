@@ -1,54 +1,57 @@
-# Odesílání dat na windy.com (PWS)
+# Sending data to windy.com (PWS)
 
-WX stanice umí posílat naměřená data do služby [windy.com](https://www.windy.com)
-jako osobní meteostanice (PWS – Personal Weather Station). Komunikace probíhá přes
-HTTPS na `stations.windy.com` ve formátu kompatibilním s Wunderground.
+The WX station can send its measured data to [windy.com](https://www.windy.com)
+as a Personal Weather Station (PWS). Communication uses HTTPS to
+`stations.windy.com` in a Wunderground-compatible format.
 
-> Funkce je ve firmwaru zapnutá přes `#define WINDY` (soubor `wx.ino`).
-> Bez vyplněného **API klíče** se nic neodesílá – odesílání je tedy ve výchozím
-> stavu „vypnuté", dokud klíč nezadáte.
-
----
-
-## 1. Získání API klíče
-
-1. Přihlas se / zaregistruj na <https://stations.windy.com>.
-2. V sekci **My stations** přidej novou stanici (*Add a station*):
-   - vyplň název, polohu (lat/lon), nadmořskou výšku a typ.
-3. Po uložení windy vygeneruje pro stanici **API key** (dlouhý řetězec, až 123 znaků)
-   a **Station ID**.
-4. Zkopíruj si **API key** – budeš ho zadávat do stanice.
+> The feature is enabled in firmware via `#define WINDY` (file `wx.ino`).
+> Without an **API key** nothing is sent — uploading is therefore **off by
+> default** until you enter the key.
 
 ---
 
-## 2. Nastavení klíče ve WX stanici
+## 1. Get an API key
 
-Klíč se zadává přes konfigurační menu (telnet nebo sériová konzole), stejně jako
-ostatní parametry (volačka, souřadnice, nadmořská výška…).
+1. Sign in / register at <https://stations.windy.com>.
+2. Under **My stations**, *Add a station*:
+   - fill in the name, location (lat/lon), altitude and type.
+3. After saving, windy generates an **API key** (a long string, up to 123
+   characters) and a **Station ID** for the station.
+4. Copy the **API key** — you will enter it into the station.
 
-1. Připoj se na stanici:
-   - **telnet** na IP stanice (port 23), nebo
-   - **USB sériová konzole** (115200 Bd).
-2. Stiskni `?` pro výpis menu. V seznamu uvidíš novou položku:
+---
+
+## 2. Set the key in the WX station
+
+The key is entered through the configuration menu (telnet or serial console),
+just like the other parameters (callsign, coordinates, altitude…).
+
+1. Connect to the station:
+   - **telnet** to the station IP (port 23), or
+   - **USB serial console** (115200 Bd).
+2. Press `?` to list the menu. You will see a new item:
 
    ```
    K  windy.com API key [empty, upload OFF]
    ```
 
-3. Stiskni `K`.
-4. Vlož (paste) API klíč z windy a potvrď **Enter** (na sériové konzoli `;`).
-5. Stanice odpoví např.:
+3. Press `K`.
+4. Paste the API key from windy and confirm with **Enter** (`;` on the serial
+   console).
+5. The station replies, for example:
 
    ```
    windy API key saved (96 chars)
    ```
 
-   a v menu se položka změní na `K  windy.com API key [SET, upload ON]`.
+   and the menu item changes to `K  windy.com API key [SET, upload ON]`.
 
-Klíč se ukládá do EEPROM (adresy 244–367), takže **přežije restart** i výpadek napájení.
+The key is stored in EEPROM (addresses 244–367), so it **survives a restart** and
+a power loss.
 
-### Vypnutí odesílání / smazání klíče
-Stiskni `K` a potvrď **prázdný** vstup (hned Enter). Klíč se vymaže a odesílání se vypne:
+### Disabling uploads / erasing the key
+Press `K` and confirm an **empty** input (just Enter). The key is erased and
+uploading is turned off:
 
 ```
 windy upload disabled (key erased)
@@ -56,78 +59,83 @@ windy upload disabled (key erased)
 
 ---
 
-## 2b. Veřejné Station ID a odkaz na hlavní stránce
+## 2b. Public Station ID and the link on the main page
 
-Aby se na hlavní webové stránce stanice (port 80) objevil odkaz **WINDY** vedle odkazu
-**APRS**, zadej ještě veřejné **Station ID** stanice.
+To make a **WINDY** link appear on the station's main web page (port 80) next to
+the **APRS** link, also enter the station's public **Station ID**.
 
-- **API klíč** (krok 2) = tajný klíč pro upload (~96 znaků).
-- **Station ID** = krátký veřejný identifikátor v adrese stanice, např. `pws-f06ea43a`
-  (najdeš ho na <https://stations.windy.com> u stanice, resp. ve veřejné URL
-  `https://www.windy.com/station/pws-…`).
+- **API key** (step 2) = the secret key used for uploading (~96 characters).
+- **Station ID** = the short public identifier in the station's URL, e.g.
+  `pws-f06ea43a` (found at <https://stations.windy.com> for the station, i.e. in
+  the public URL `https://www.windy.com/station/pws-…`).
 
-Nastavení:
+To set it:
 
-1. V menu stiskni `I`.
-2. Vlož Station ID (např. `pws-f06ea43a`) a potvrď **Enter** (`;` na sériové konzoli).
-3. Stanice odpoví:
+1. In the menu press `I`.
+2. Paste the Station ID (e.g. `pws-f06ea43a`) and confirm with **Enter** (`;` on
+   the serial console).
+3. The station replies:
 
    ```
    windy Station ID saved | https://www.windy.com/station/pws-f06ea43a
    ```
 
-Odkaz **WINDY** se na hlavní stránce zobrazí, **jen když je zároveň**:
-- nastavený API klíč (probíhá upload), a
-- vyplněné Station ID.
+The **WINDY** link is shown on the main page **only when both**:
+- an API key is set (upload is active), and
+- a Station ID is filled in.
 
-Výsledek v hlavičce stránky:
+Result in the page header:
 
 ```
 … | APRS | WINDY | Upload FW | …
 ```
 
-Station ID smažeš zadáním prázdné hodnoty u příkazu `I` (odkaz se pak skryje).
+Erase the Station ID by entering an empty value for command `I` (the link then
+hides).
 
 ---
 
-## 3. Nadmořská výška a souřadnice
+## 3. Altitude and coordinates
 
-Aby data dávala smysl:
+For the data to make sense:
 
-- Nastav **nadmořskou výšku** v menu příkazem `m` (slouží i k přepočtu tlaku na hladinu moře).
-- Souřadnice stanice se zadávají přímo na webu windy.com u dané stanice.
-
----
-
-## 4. Jak často se odesílá
-
-Data se posílají ve stejném intervalu jako ostatní výstupy (MQTT, APRS) –
-**„TX repeat time"** v menu (příkaz `x`), výchozí **5 minut**.
-Windy doporučuje neposílat častěji než cca jednou za 5 minut, takže výchozí
-hodnotu není potřeba měnit.
+- Set the **altitude** in the menu with command `m` (also used to convert pressure
+  to sea level).
+- The station coordinates are entered directly on the windy.com website for that
+  station.
 
 ---
 
-## 5. Co se odesílá (a v jakých jednotkách)
+## 4. How often it is sent
 
-Firmware převádí interní metrické hodnoty na imperiální jednotky, které windy očekává:
-
-| Veličina         | windy parametr  | jednotka | převod ve firmwaru        |
-|------------------|-----------------|----------|---------------------------|
-| Směr větru       | `winddir`       | °        | –                         |
-| Rychlost větru   | `windspeedmph`  | mph      | m/s ÷ 0,44704             |
-| Náraz větru      | `windgustmph`   | mph      | m/s ÷ 0,44704             |
-| Teplota          | `tempf`         | °F       | °C × 1,8 + 32             |
-| Srážky (dnes)    | `rainin`        | palce    | mm ÷ 25,4                 |
-| Tlak             | `baromin`       | inHg     | hPa × 0,02953             |
-| Rosný bod        | `dewptf`        | °F       | °C × 1,8 + 32             |
-| Vlhkost          | `humidity`      | %        | –                         |
+Data is sent at the same interval as the other outputs (MQTT, APRS) — the
+**"TX repeat time"** in the menu (command `x`), default **5 minutes**.
+Windy recommends sending no more often than about once every 5 minutes, so the
+default value does not need changing.
 
 ---
 
-## 6. Ověření / ladění
+## 5. What is sent (and in which units)
 
-Zapni ladění v menu příkazem `*` (debug). V konzoli pak uvidíš:
+The firmware converts its internal metric values to the imperial units windy
+expects:
+
+| Quantity         | windy parameter | unit    | firmware conversion       |
+|------------------|-----------------|---------|---------------------------|
+| Wind direction   | `winddir`       | °       | –                         |
+| Wind speed       | `windspeedmph`  | mph     | m/s ÷ 0.44704             |
+| Wind gust        | `windgustmph`   | mph     | m/s ÷ 0.44704             |
+| Temperature      | `tempf`         | °F      | °C × 1.8 + 32             |
+| Rain (today)     | `rainin`        | inches  | mm ÷ 25.4                 |
+| Pressure         | `baromin`       | inHg    | hPa × 0.02953             |
+| Dew point        | `dewptf`        | °F      | °C × 1.8 + 32             |
+| Humidity         | `humidity`      | %       | –                         |
+
+---
+
+## 6. Verification / debugging
+
+Enable debugging from the menu with command `*` (debug). The console then shows:
 
 ```
 [windy] connecting to stations.windy.com ...
@@ -135,34 +143,38 @@ Zapni ladění v menu příkazem `*` (debug). V konzoli pak uvidíš:
 [windy] connected!
 [windy] GET /pws/update/XXXX?winddir=...&windspeedmph=... HTTP/1.1
 [windy] headers received
-[windy RX] ... odpověď serveru ...
+[windy RX] ... server response ...
 [windy] stop
 ```
 
-- `connection failed!` → zkontroluj internet/DNS, čas (TLS potřebuje platný čas přes NTP),
-  a že stanice má konektivitu (Ethernet připojen, MQTT připojeno).
-- `no API key set, skip upload` → není nastavený klíč (viz krok 2).
-- Data na webu windy.com se objeví u stanice v sekci **My stations** během několika minut.
+- `connection failed!` → check internet/DNS, the clock (TLS needs a valid time via
+  NTP), and that the station has connectivity (Ethernet up, MQTT connected).
+- `no API key set, skip upload` → no key is set (see step 2).
+- Data appears for the station under **My stations** on windy.com within a few
+  minutes.
 
 ---
 
-## 7. Poznámky k paměti (důležité)
+## 7. Memory notes (important)
 
-Původně byla funkce vypnutá kvůli nedostatku RAM. Aktuální implementace ji řeší:
+The feature was originally disabled because of low RAM. The current implementation
+solves that:
 
-- **TLS klient (`WiFiClientSecure`) je vytvářen lokálně** uvnitř funkce odesílání,
-  takže jeho ~30–40 kB bufferů se po každém odeslání **uvolní** (dříve byl globální
-  a držel paměť trvale).
-- Ve výchozím stavu se používá `client.setInsecure()` – **neověřuje se certifikát**
-  serveru, čímž se ušetří paměť. Pro meteodata je to akceptovatelné.
-- Volný heap se vypisuje před každým odesláním (`free heap before:`), takže lze sledovat
-  trend (publikuje se i přes MQTT topic `FreeHeap`).
+- **The TLS client (`WiFiClientSecure`) is created locally** inside the upload
+  function, so its ~30–40 kB of buffers are **freed** after each upload (it used to
+  be global and held memory permanently).
+- By default `client.setInsecure()` is used — the server **certificate is not
+  verified**, which saves memory. For weather data this is acceptable.
+- Free heap is printed before each upload (`free heap before:`), so the trend can
+  be watched (it is also published via the MQTT topic `FreeHeap`).
 
-### Volitelné: ověřování certifikátu
-Pokud chceš plné ověření TLS certifikátu (vyšší nárok na RAM), odkomentuj v `wx.ino`:
+### Optional: certificate verification
+If you want full TLS certificate verification (higher RAM demand), uncomment in
+`wx.ino`:
 
 ```cpp
 #define WINDY_VERIFY_CERT
 ```
 
-Tím se aktivuje ověření proti vestavěnému ISRG Root X1 certifikátu (platný do 2035).
+This enables verification against the built-in ISRG Root X1 certificate (valid
+until 2035).

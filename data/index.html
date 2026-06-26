@@ -19,11 +19,22 @@
   .card .lbl{color:var(--mut);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em}
   .card .val{font-size:1.7rem;font-weight:400;margin-top:.25rem;font-variant-numeric:tabular-nums}
   .card .val small{font-size:.5em;color:var(--mut)}
-  .card.w1{grid-column:3;grid-row:1}   /* wind avg: last column, top */
-  .card.w2{grid-column:3;grid-row:2}   /* wind max: last column, below avg */
-  .winddir{display:flex;flex-direction:column;align-items:center;gap:.25rem;margin:1.2rem 0 .2rem}
-  .winddir .arrow{font-size:4.5rem;transition:transform .6s ease;display:inline-block}
-  .winddir .wd{color:var(--mut);font-size:1.15rem;font-variant-numeric:tabular-nums}
+  .windrow{width:100%;max-width:760px;display:flex;flex-wrap:wrap;gap:1.5rem;
+           justify-content:center;align-items:center;margin:1.4rem 0 .2rem}
+  .gauge{display:flex;flex-direction:column;align-items:center}
+  .gsvg{width:220px;height:140px}
+  .gtrack{fill:none;stroke:#4b5258;stroke-width:12;stroke-linecap:round}
+  .gband{fill:none;stroke-width:12;stroke-linecap:round}   /* coloured speed zones, drawn over track */
+  .gneedle{stroke:var(--accent);stroke-width:4;stroke-linecap:round;transform-origin:110px 110px;
+           transition:transform .25s linear, stroke .25s linear}
+  .ghub{fill:var(--accent);transition:fill .25s linear}
+  .gtick{fill:var(--mut);font-size:11px}
+  .gval{font-size:2rem;font-weight:400;margin-top:-1.5rem;font-variant-numeric:tabular-nums}
+  .gval small{font-size:.5em;color:var(--mut)}
+  .card.wmaxc{grid-column:3;grid-row:1}     /* wind max 5 min: 3rd column, top */
+  .card.wdirc{grid-column:3;grid-row:2}     /* wind direction: 3rd column, below */
+  .wdirc .arrow{font-size:2.6rem;line-height:1;margin-top:.15rem;transition:transform .6s ease;display:inline-block}
+  .wdirc .wd{color:var(--mut);font-size:.95rem;font-variant-numeric:tabular-nums}
   .btns{display:flex;gap:.8rem;margin:1.6rem 0 .5rem;flex-wrap:wrap;justify-content:center}
   .btn{padding:.75rem 1.8rem;border-radius:10px;background:var(--accent);color:#fff;text-decoration:none;
        font-weight:600;font-size:1rem;border:none;cursor:pointer}
@@ -58,17 +69,28 @@
     <div class="card" id="cardDew">
       <div class="lbl">Dew point</div><div class="val"><span id="dew">--</span> <small>&deg;C</small></div>
     </div>
-    <div class="card w1">
-      <div class="lbl">Wind avg</div><div class="val"><span id="wavg">--</span> <small>m/s</small></div>
+    <div class="card wmaxc">
+      <div class="lbl">Wind max 5 min</div><div class="val"><span id="wmax">--</span> <small>m/s</small></div>
+      <div class="lbl" id="wmaxt" style="margin-top:.2rem"></div>
     </div>
-    <div class="card w2">
-      <div class="lbl">Wind max</div><div class="val"><span id="wmax">--</span> <small>m/s</small></div>
+    <div class="card wdirc">
+      <div class="lbl">Wind dir</div>
+      <div id="windDirVals">
+        <div class="arrow" id="arrow">&#8593;</div>
+        <div class="wd"><span id="wdir">--</span>&deg;</div>
+      </div>
     </div>
   </div>
 
-  <div class="winddir" id="windDirWrap">
-    <div class="arrow" id="arrow">&#8593;</div>
-    <div class="wd"><span id="wdir">--</span>&deg;</div>
+  <div class="windrow">
+    <div class="gauge">
+      <svg viewBox="0 0 220 140" class="gsvg" aria-label="wind speed">
+        <path class="gtrack" d="M20 110 A 90 90 0 0 1 200 110"/>
+        <line id="needle" class="gneedle" x1="110" y1="110" x2="110" y2="28"/>
+        <circle cx="110" cy="110" r="6" class="ghub"/>
+      </svg>
+      <div class="gval"><span id="wnow">--</span> <small>m/s</small></div>
+    </div>
   </div>
 
   <div class="btns">
@@ -81,7 +103,7 @@
     <a id="windyLink" class="hide" target="_blank" rel="noopener">windy.com</a>
   </div>
 
-  <footer>rev <span id="rev">-</span> &middot; auto-refresh every 5 s</footer>
+  <footer>rev <span id="rev">-</span> &middot; wind live &middot; rest 30 s</footer>
 
 <script>
   var DIRS=["N","NE","E","SE","S","SW","W","NW"];
@@ -90,6 +112,58 @@
 
   function setText(id,v){document.getElementById(id).textContent=v;}
   function fmt(v,d){return (v==null||isNaN(v))?'--':Number(v).toFixed(d);}
+
+  var GMAX=25;   // wind-speed gauge full scale, m/s (0..25 ~ 0..90 km/h)
+  // speed colour zones by upper bound (m/s): green calm, orange strong, red gale+
+  var ZONES=[{to:8,c:'#3fb55e'},{to:14,c:'#e0a020'},{to:GMAX,c:'#e0503a'}];
+  function speedColor(v){
+    for(var i=0;i<ZONES.length;i++) if(v<=ZONES[i].to) return ZONES[i].c;
+    return ZONES[ZONES.length-1].c;
+  }
+  // build the gauge: coloured zone arcs (behind the needle) + scale labels 0,5,..,GMAX
+  (function(){
+    var svg=document.querySelector('.gsvg'), ns='http://www.w3.org/2000/svg', cx=110, cy=110;
+    var needle=document.getElementById('needle');
+    function pt(v,r){var th=Math.PI*(1-v/GMAX);return [cx+r*Math.cos(th),cy-r*Math.sin(th)];}
+    var from=0;
+    ZONES.forEach(function(z){                       // one coloured arc per zone
+      var a=pt(from,90), b=pt(z.to,90);
+      var p=document.createElementNS(ns,'path');
+      p.setAttribute('d','M'+a[0].toFixed(2)+' '+a[1].toFixed(2)+' A 90 90 0 0 1 '+b[0].toFixed(2)+' '+b[1].toFixed(2));
+      p.setAttribute('class','gband'); p.setAttribute('stroke',z.c);
+      svg.insertBefore(p, needle);                   // keep the band under the needle
+      from=z.to;
+    });
+    for(var val=0; val<=GMAX; val+=5){               // scale labels (on top)
+      var l=pt(val,70), t=document.createElementNS(ns,'text');
+      t.setAttribute('x',l[0].toFixed(1)); t.setAttribute('y',(l[1]+4).toFixed(1));
+      t.setAttribute('text-anchor','middle'); t.setAttribute('class','gtick');
+      t.textContent=val; svg.appendChild(t);
+    }
+  })();
+  // wind dir + speed. Fed by the SSE push (lastMs/windMaxMs/windDir) and by the REST polls (which add
+  // periodMaxUtc). Numeric fields are always present; periodMaxUtc only from REST, so guard it.
+  function applyWind(d){
+    var now = Number(d.lastMs);
+    setText('wnow', fmt(d.lastMs,1));     // current (instantaneous) wind speed - gauge centre
+    // move the needle: 0 m/s -> -90deg (left), GMAX -> +90deg (right), and colour it by speed zone
+    var v = isNaN(now) ? 0 : Math.max(0, Math.min(GMAX, now));
+    var nd=document.getElementById('needle'), col=speedColor(v);
+    nd.style.transform = 'rotate('+(-90 + v/GMAX*180)+'deg)';
+    nd.style.stroke = col;
+    document.querySelector('.ghub').style.fill = col;
+    setText('wmax', fmt(d.windMaxMs,1));  // rolling max over the trailing 5 min (decoupled from MQTT)
+    if(d.periodMaxUtc !== undefined){     // only the REST polls carry the timestamp
+      var t = d.periodMaxUtc || '', sp = t.indexOf(' ');
+      setText('wmaxt', (sp>=0) ? t.slice(sp+1) : '');
+    }
+    setText('wdir', d.windDir);
+    document.getElementById('arrow').style.transform='rotate('+(d.windDir||0)+'deg)';
+    // wind direction only meaningful when there is wind: hide just the arrow + azimuth value when
+    // calm (the "Wind dir" tile and its label stay in place)
+    var calm = !(Number(d.lastMs)>0 || Number(d.windMaxMs)>0);
+    document.getElementById('windDirVals').classList.toggle('hide', calm);
+  }
 
   function apply(d){
     document.body.classList.remove('stale');
@@ -100,17 +174,11 @@
     setText('hum', fmt(d.hum,0));
     setText('press', fmt(d.pressHPa,1));
     setText('rain', fmt(d.rainMM,2));
-    setText('wavg', fmt(d.windAvgMs,1));
-    setText('wmax', fmt(d.windMaxMs,1));
-    setText('wdir', d.windDir);
     setText('rev', d.rev || '-');
-    document.getElementById('arrow').style.transform='rotate('+(d.windDir||0)+'deg)';
+    applyWind(d);
     document.getElementById('cardHum').classList.toggle('hide', !d.hasHum);
     document.getElementById('cardPress').classList.toggle('hide', !d.hasPress);
     document.getElementById('cardDew').classList.toggle('hide', !d.hasHum);
-    // wind direction only meaningful when there is wind: hide arrow + azimuth at zero speed
-    var calm = !(Number(d.windAvgMs)>0 || Number(d.windMaxMs)>0);
-    document.getElementById('windDirWrap').classList.toggle('hide', calm);
 
     var ap=document.getElementById('aprsLink');
     if(d.aprs && d.call){ap.href='https://aprs.fi/#!call='+encodeURIComponent(d.call);ap.classList.remove('hide');}
@@ -126,8 +194,34 @@
       .then(apply)
       .catch(function(){document.body.classList.add('stale');});
   }
-  poll();
-  setInterval(poll,5000);
+  // Fallback wind poll, used only while the SSE stream is down (old browser, network blip).
+  var sseOK=false;
+  function pollWind(){
+    if(sseOK) return;           // SSE is feeding the needle - don't double-poll
+    fetch('/api/wind',{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(applyWind)
+      .catch(function(){/* a missed fast poll is harmless; the next one recovers */});
+  }
+
+  // Live wind push via Server-Sent Events from WindTask (async server on :82). Gives a smooth, gust-
+  // reactive needle without polling. The browser auto-reconnects on error; we just flip sseOK so the
+  // fallback poll resumes meanwhile. /api/live (below) still carries the slow sensors + max timestamp.
+  function startSSE(){
+    if(!window.EventSource) return;   // very old browser -> stays on polling
+    var es = new EventSource(location.protocol+'//'+location.hostname+':82/events');
+    es.addEventListener('wind', function(e){
+      sseOK=true;
+      try{ applyWind(JSON.parse(e.data)); }catch(_){}
+    });
+    es.onerror = function(){ sseOK=false; };   // EventSource reconnects on its own
+  }
+
+  poll();                       // full set once on load
+  pollWind();                   // immediate fresh wind (before SSE is up)
+  startSSE();                   // then switch to live push
+  setInterval(pollWind,2000);   // fallback wind poll (no-op while SSE is alive)
+  setInterval(poll,30000);      // temp/hum/press/rain + max timestamp: ~2x per minute
 </script>
 </body>
 </html>
