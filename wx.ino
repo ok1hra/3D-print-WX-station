@@ -1,21 +1,4 @@
 /*
-
-Release new firmware version:
-1. Increase REV value in this .ino
-2. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary
-   (HARDWARE ESP32-POE; the sketch-local partitions.csv is applied automatically)
-3. generate all .bin and publish to GitHub Pages: $ ./tools/all.sh --publish
-4. git commit with the Release number as comment and push
-
-Partial update (without a release):
-1. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary (HARDWARE ESP32-POE)
-2. build SPIFFS image: $ tools/build_spiffs_image.sh
-3. upload firmware.bin and build/spiffs.bin via EasyOTA at http://[ip]:82/update
-4. git commit and push
-
-Firmware download page: https://ok1hra.github.io/3D-print-WX-station/
-One-time setup: GitHub repo Settings -> Pages -> Branch: gh-pages, folder /(root)
-
 3D printed WX station
 ----------------------
 https://remoteqth.com/w/doku.php?id=3d_print_wx_station
@@ -39,6 +22,24 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+Release new firmware version:
+1. Increase REV value in this .ino
+2. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary
+   (HARDWARE ESP32-POE; the sketch-local partitions.csv is applied automatically)
+3. generate all .bin and publish to GitHub Pages: $ ./tools/all.sh --publish
+4. git commit with the Release number as comment and push
+
+Partial update (without a release):
+1. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary (HARDWARE ESP32-POE)
+2. build SPIFFS image: $ tools/build_spiffs_image.sh
+3. upload firmware.bin and build/spiffs.bin via EasyOTA at http://[ip]:82/update
+4. git commit and push
+
+Firmware download page: https://ok1hra.github.io/3D-print-WX-station/
+One-time setup: GitHub repo Settings -> Pages -> Branch: gh-pages, folder /(root)
+
 
 Send test packet
   echo -n -e '\x00ms:bro;' | nc -u -w1 192.168.1.23 88 | hexdump -C
@@ -83,6 +84,10 @@ Changelog:
 20200424 - add support for external 1-wire temperature ensor (DS18B20)
 
 ToDo
+"Minimal SPIFFS (Large APPS with OTA)" dá 1,9 MB na app a OTA zůstává funkční.
+Tvoje webové stránky v data/ mají jen 60 KB → do 190 KB SPIFFS se v pohodě vejdou.
+Kompilace: přidat --board-options PartitionScheme=min_spiffs
+V Arduino IDE: Tools → Partition Scheme → Minimal SPIFFS (Large APPS with OTA).
 - web setup
 - web selfcheck
 - Windy
@@ -123,7 +128,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20260626";
+const char* REV = "20260627";
 #define HWREVsw 8                   // software PCB version [7-8]
 // #define AJAX                        // enable ajax web server
 #define WINDY                      // upload to windy.com PWS (set station API key with 'K' menu command). TLS client is local + setInsecure() to save heap
@@ -237,7 +242,7 @@ unsigned long ConnOkTimer=0;           // millis() of last healthy ETH state
 
 byte InputByte[21];
 // #define Ser2net                  // Serial to ip proxy - DISABLE if board revision 0.3 or lower
-#define EnableOTA                // Enable flashing ESP32 Over The Air
+// #define EnableOTA                // Enable flashing ESP32 Over The Air (port 3232 IDE/espota - unused, disabled to save ~33 KB flash; web OTA on :82 stays)
 // int NumberOfEncoderOutputs = 8;  // 2-16
 int EnableSerialDebug     = 0;
 long FreneticModeTimer ;
@@ -279,9 +284,8 @@ int i = 0;
 -13
 14-17 - SERIAL1_BAUDRATE
 18-21 - SerialServerIPport
-22-25 - (free, was: IncomingSwitchUdpPort)
-26-29 - (free, was: RebootWatchdog)
-30-33 - (free, was: OutputWatchdog)
+22-31 - APRS Maidenhead locator (10 char, 0xff terminated) - source for the raw APRS coordinate
+32-33 - (free, was: OutputWatchdog tail)
 34    - (free, was: Bank0 storage)
 35    - (free, was: Bank1 storage)
 36    - (free, was: Bank2 storage)
@@ -572,6 +576,7 @@ uint16_t AprsPort;
 IPAddress aprs_server_ip(0, 0, 0, 0);
 String AprsPassword;
 String AprsCoordinates;
+String AprsLocator;     // Maidenhead locator the raw coordinate was computed from (web prefill only)
 
 // DS18B20
 #if defined(DS18B20)
@@ -957,6 +962,13 @@ void setup() {
   for (int i=213; i<231; i++){
     if(EEPROM.read(i)!=0xff){
       AprsCoordinates=AprsCoordinates+char(EEPROM.read(i));
+    }
+  }
+
+  // 22-31 - APRS Maidenhead locator (web prefill; raw coordinate above is what gets transmitted)
+  for (int i=22; i<32; i++){
+    if(EEPROM.read(i)!=0xff){
+      AprsLocator=AprsLocator+char(EEPROM.read(i));
     }
   }
 
@@ -2144,8 +2156,33 @@ void AzShift(int AZ){
 }
 //-------------------------------------------------------------------------------------------------------
 
+// True only for a well-formed uncompressed APRS lat/lon: DDMM.hhN<sym>DDDMM.hhE (exactly 18 chars).
+// Guards the TX path so a malformed coordinate (e.g. a raw Maidenhead locator that slipped into
+// storage) is never beaconed - aprs.fi would otherwise parse it as a bogus position.
+bool AprsCoordValid(const String& s){
+  if(s.length()!=18) return false;
+  for(int i=0;i<18;i++){
+    char c=s[i]; bool ok;
+    switch(i){
+      case 4: case 14: ok=(c=='.'); break;
+      case 7:          ok=(c=='N'||c=='S'); break;
+      case 8:          ok=(c=='/'||c=='\\'); break;   // symbol-table identifier
+      case 17:         ok=(c=='E'||c=='W'); break;
+      default:         ok=(c>='0'&&c<='9'); break;
+    }
+    if(!ok) return false;
+  }
+  return true;
+}
+
 void AprsWxIgate() {
   if(AprsON==true){
+    if(!AprsCoordValid(AprsCoordinates)){   // refuse to beacon garbage (e.g. a raw locator string)
+      if(EnableSerialDebug>0){
+        Prn(3, 1,"APRS-TX skipped: invalid coordinate '"+AprsCoordinates+"' (need DDMM.hhN/DDDMM.hhE)");
+      }
+      return;
+    }
     AprsClient.setTimeout(5);   // 5s socket timeout, avoid blocking on a stalled server
     if (!AprsClient.connect("czech.aprs2.net", 14580)) {  // client.connect(URL, port);  char URL[]="google.com"
       if(EnableSerialDebug>0){
@@ -2569,6 +2606,9 @@ void CLI(){
             EEPROM.write(212+i, 0xff);
           }
         }
+        // raw coordinate set directly -> stored Maidenhead locator is now stale, clear it
+        AprsLocator="";
+        for (int i=22; i<32; i++) EEPROM.write(i, 0xff);
         EEPROMcommit();
 
       // m
@@ -3850,6 +3890,7 @@ void handleApiConfig(){
   j += "\"aprsOn\":" + String(AprsON ? "true":"false") + ",";
   j += "\"aprsPassSet\":" + String(AprsPassword.length()>0 ? "true":"false") + ",";
   j += "\"aprsCoord\":\"" + jsonEsc(AprsCoordinates) + "\",";
+  j += "\"aprsLoc\":\"" + jsonEsc(AprsLocator) + "\",";
   #if defined(WINDY)
     j += "\"windyKeySet\":" + String(WindyApiKey.length()>0 ? "true":"false") + ",";
     j += "\"windyId\":\"" + jsonEsc(WindyStationId) + "\",";
@@ -3941,6 +3982,10 @@ void handleApiConfigSave(){
   if(webserver.hasArg("aprsCoord")){
     String v=webserver.arg("aprsCoord"); if(v.length()>18) v=v.substring(0,18);
     AprsCoordinates=v; eepromWriteString(213, 18, v);
+  }
+  if(webserver.hasArg("aprsLoc")){
+    String v=webserver.arg("aprsLoc"); v.toUpperCase(); if(v.length()>10) v=v.substring(0,10);
+    AprsLocator=v; eepromWriteString(22, 10, v);
   }
   #if defined(WINDY)
   if(webserver.hasArg("windyKey") && webserver.arg("windyKey").length()>0){

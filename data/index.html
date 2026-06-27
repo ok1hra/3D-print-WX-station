@@ -58,16 +58,16 @@
 
   <div class="grid">
     <div class="card" id="cardHum">
-      <div class="lbl">Humidity</div><div class="val"><span id="hum">--</span><small>%</small></div>
+      <div class="lbl">Rel. humidity</div><div class="val"><span id="hum">--</span><small>%</small></div>
     </div>
     <div class="card" id="cardPress">
-      <div class="lbl">Pressure</div><div class="val"><span id="press">--</span> <small>hPa</small></div>
+      <div class="lbl">Pressure (MSL)</div><div class="val"><span id="press">--</span> <small>hPa</small></div>
     </div>
     <div class="card">
       <div class="lbl">Rain today</div><div class="val"><span id="rain">--</span> <small>mm</small></div>
     </div>
     <div class="card" id="cardDew">
-      <div class="lbl">Dew point</div><div class="val"><span id="dew">--</span> <small>&deg;C</small></div>
+      <div class="lbl">Dew point (calc.)</div><div class="val"><span id="dew">--</span> <small>&deg;C</small></div>
     </div>
     <div class="card wmaxc">
       <div class="lbl">Wind max 5 min</div><div class="val"><span id="wmax">--</span> <small>m/s</small></div>
@@ -112,7 +112,7 @@
 
   var GMAX=25;   // wind-speed gauge full scale, m/s (0..25 ~ 0..90 km/h)
   // speed colour zones by upper bound (m/s): green calm, orange strong, red gale+
-  var ZONES=[{to:8,c:'#3fb55e'},{to:14,c:'#e0a020'},{to:GMAX,c:'#e0503a'}];
+  var ZONES=[{to:8,c:'#5d976c'},{to:14,c:'#b09050'},{to:GMAX,c:'#b76e63'}];   // saturation halved (HSL S/2)
   function speedColor(v){
     for(var i=0;i<ZONES.length;i++) if(v<=ZONES[i].to) return ZONES[i].c;
     return ZONES[ZONES.length-1].c;
@@ -158,7 +158,7 @@
     document.getElementById('arrow').style.transform='rotate('+(d.windDir||0)+'deg)';
     // wind direction only meaningful when there is wind: hide just the azimuth value + arrow when
     // calm (the "Wind dir" tile and its label stay in place)
-    var calm = !(Number(d.lastMs)>0 || Number(d.windMaxMs)>0);
+    var calm = !(Number(d.lastMs)>0);
     document.getElementById('wdirv').classList.toggle('hide', calm);
     document.getElementById('arrow').classList.toggle('hide', calm);
   }

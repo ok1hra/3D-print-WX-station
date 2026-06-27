@@ -33,8 +33,11 @@
   .sw input:checked+.sl:before{transform:translateX(36px)}
   .sw input:checked+.sl:after{content:"ON";right:auto;left:9px}
   h3{color:var(--mut);font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;margin:1.3rem 0 .3rem}
+  h3 a{color:var(--accent);text-decoration:none}
   .hint{color:var(--mut);font-size:.78rem;margin:.2rem 0 0}
   .raw{color:var(--mut);font-size:.85em}
+  .raw.bad{color:var(--err)}
+  .row label a{color:var(--accent);text-decoration:none}
   .savebar{position:fixed;bottom:0;left:0;right:0;background:#23272b;border-top:1px solid var(--line);
        padding:.8rem 1rem;display:flex;align-items:center;gap:1rem;justify-content:flex-end}
   .savebar #msg{margin-right:auto;font-size:.9rem}
@@ -80,8 +83,14 @@
       <h3>APRS</h3>
       <div class="row"><label>APRS enabled<div class="hint">sends as <b>CALLSIGN-ssid</b> from the Station tab</div></label><span class="v"><span class="sw"><input type="checkbox" id="aprsOn"><span class="sl"></span></span></span></div>
       <div class="row"><label>APRS password</label><span class="v"><input type="password" id="aprsPass" autocomplete="new-password"></span></div>
-      <div class="row"><label>APRS coordinates</label><span class="v"><input type="text" id="aprsCoord" maxlength="18"></span></div>
-      <h3>windy.com</h3>
+      <div class="row">
+        <label>APRS coordinates
+          <div class="hint"><a href="https://www.egloff.eu/qralocator/" target="_blank" rel="noopener">Locator &#8599;</a> — 6/8/10 char, e.g. JN81DU55IX</div>
+          <div class="raw" id="aprsRaw">&mdash;</div>
+        </label>
+        <span class="v"><input type="text" id="aprsLoc" maxlength="10" placeholder="locator" autocapitalize="characters" autocomplete="off"></span>
+      </div>
+      <h3><a href="https://stations.windy.com/keys" target="_blank" rel="noopener">windy.com</a></h3>
       <div class="row"><label>API key</label><span class="v"><input type="password" id="windyKey" autocomplete="new-password"></span></div>
       <div class="row"><label>Station ID <div class="hint">without pws- prefix, e.g. f052c6e5</div></label><span class="v"><input type="text" id="windyId" maxlength="32"></span></div>
     </section>
@@ -174,7 +183,13 @@
       setVal('altitude',c.altitude); setVal('call',c.call); setVal('rainMmPulse',c.rainMmPulse);
       setVal('windDirShift',c.windDirShift); setVal('tempCal',c.tempCal);
       setVal('mqttIp',c.mqttIp); setVal('mqttPort',c.mqttPort);
-      $('aprsOn').checked=!!c.aprsOn; setVal('aprsCoord',c.aprsCoord); setVal('windyId',c.windyId);
+      $('aprsOn').checked=!!c.aprsOn; setVal('windyId',c.windyId);
+      // APRS coordinate: input holds the Maidenhead locator, raw is computed in-page + shown below
+      loadedRaw = c.aprsCoord || '';
+      setVal('aprsLoc', c.aprsLoc);
+      $('aprsRaw').classList.remove('bad');
+      $('aprsRaw').textContent = loadedRaw || '—';
+      aprsValid = true;
       $('debugLevel').value=c.debugLevel; dbgDirty=false;
       // secrets: show placeholder if already set, leave blank
       $('aprsPass').placeholder = c.aprsPassSet ? '•••••• (unchanged)' : 'not set';
@@ -195,9 +210,12 @@
   function save(){
     var p=new URLSearchParams();
     var fields=['altitude','call','rainMmPulse','windDirShift','tempCal','mqttIp','mqttPort',
-                'aprsCoord','windyId','debugLevel'];
+                'windyId','debugLevel'];
     fields.forEach(function(f){ var v=$(f).value; if(v!=='') p.append(f,v); });
     p.append('aprsOn', $('aprsOn').checked?'1':'0');
+    // APRS: send the locator + the in-page computed raw. Empty locator = leave stored value untouched.
+    var loc=$('aprsLoc').value.toUpperCase();
+    if(loc!==''){ var raw=loc2aprs(loc); if(raw){ p.append('aprsLoc',loc); p.append('aprsCoord',raw); } }
     // secrets only when user typed something
     if($('aprsPass').value) p.append('aprsPass',$('aprsPass').value);
     if($('windyKey').value) p.append('windyKey',$('windyKey').value);
@@ -214,6 +232,47 @@
       .catch(function(){ m.className='err'; m.textContent='save error'; $('saveBtn').disabled=false; });
   }
   $('saveBtn').onclick=save;
+
+  // ---- APRS Maidenhead locator -> raw APRS coordinate (DDMM.mmN/DDDMM.mmE) ----
+  // Accepts 6/8/10-char locators; encodes the CENTRE of the smallest resolved square. The middle
+  // '/' is the APRS primary symbol-table id (firmware appends the '_' weather symbol).
+  var loadedRaw='', aprsValid=true;
+  function aprsFmt(lat,lon){
+    var ns=lat>=0?'N':'S', ew=lon>=0?'E':'W', a=Math.abs(lat), o=Math.abs(lon);
+    function dm(x){var d=Math.floor(x), m=Math.round((x-d)*60*100)/100; if(m>=60){m-=60;d++;} return [d,m];}
+    var la=dm(a), lo=dm(o);
+    function pad(s,w){s=String(s);while(s.length<w)s='0'+s;return s;}
+    var latS=pad(la[0],2)+pad(la[1].toFixed(2),5);   // DDMM.mm
+    var lonS=pad(lo[0],3)+pad(lo[1].toFixed(2),5);   // DDDMM.mm
+    return latS+ns+'/'+lonS+ew;
+  }
+  function loc2aprs(loc){
+    loc=(loc||'').toUpperCase();
+    if(!/^[A-R]{2}[0-9]{2}([A-X]{2}([0-9]{2}([A-X]{2})?)?)?$/.test(loc)) return null;
+    if(loc.length!==6 && loc.length!==8 && loc.length!==10) return null;
+    var lon=-180, lat=-90, lonS=20, latS=10;                 // field
+    lon+=(loc.charCodeAt(0)-65)*lonS; lat+=(loc.charCodeAt(1)-65)*latS;
+    lonS=2; latS=1;                                          // square
+    lon+=(loc.charCodeAt(2)-48)*lonS; lat+=(loc.charCodeAt(3)-48)*latS;
+    if(loc.length>=6){ lonS=2/24; latS=1/24;                 // subsquare
+      lon+=(loc.charCodeAt(4)-65)*lonS; lat+=(loc.charCodeAt(5)-65)*latS; }
+    if(loc.length>=8){ lonS=2/24/10; latS=1/24/10;           // extended square
+      lon+=(loc.charCodeAt(6)-48)*lonS; lat+=(loc.charCodeAt(7)-48)*latS; }
+    if(loc.length>=10){ lonS=2/24/10/24; latS=1/24/10/24;    // extended subsquare
+      lon+=(loc.charCodeAt(8)-65)*lonS; lat+=(loc.charCodeAt(9)-65)*latS; }
+    lon+=lonS/2; lat+=latS/2;                                // centre of the smallest square
+    return aprsFmt(lat,lon);
+  }
+  function onLoc(){
+    var el=$('aprsLoc'), v=el.value.toUpperCase(); if(v!==el.value) el.value=v;
+    var raw=$('aprsRaw');
+    if(v===''){ raw.classList.remove('bad'); raw.textContent=loadedRaw||'—'; aprsValid=true; }
+    else { var r=loc2aprs(v);
+      if(r){ raw.classList.remove('bad'); raw.textContent=r; aprsValid=true; }
+      else { raw.classList.add('bad'); raw.textContent='invalid locator'; aprsValid=false; } }
+    $('saveBtn').disabled = !aprsValid;
+  }
+  $('aprsLoc').oninput=onLoc;
 
   // debug-level dropdown is a pending selection until Save; mark it dirty on change so the 2 s
   // /api/debug poll (which reflects the device's actual level) doesn't revert it to OFF
