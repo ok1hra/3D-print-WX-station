@@ -84,10 +84,13 @@ Changelog:
 20200424 - add support for external 1-wire temperature ensor (DS18B20)
 
 ToDo
-"Minimal SPIFFS (Large APPS with OTA)" dá 1,9 MB na app a OTA zůstává funkční.
-Tvoje webové stránky v data/ mají jen 60 KB → do 190 KB SPIFFS se v pohodě vejdou.
-Kompilace: přidat --board-options PartitionScheme=min_spiffs
-V Arduino IDE: Tools → Partition Scheme → Minimal SPIFFS (Large APPS with OTA).
+- "Minimal SPIFFS (Large APPS with OTA)" dá 1,9 MB na app a OTA zůstává funkční.
+  Tvoje webové stránky v data/ mají jen 60 KB → do 190 KB SPIFFS se v pohodě vejdou.
+  Kompilace: přidat --board-options PartitionScheme=min_spiffs
+  V Arduino IDE: Tools → Partition Scheme → Minimal SPIFFS (Large APPS with OTA).
+V pripade pouziti detekovat v ota starsi verze FW a neumoznit je nahrat
+
+
 - web setup
 - web selfcheck
 - Windy
@@ -134,6 +137,7 @@ const char* REV = "20260627";
 #define WINDY                      // upload to windy.com PWS (set station API key with 'K' menu command). TLS client is local + setInsecure() to save heap
 // #define M_DNS                        // not work, but ArduinoOTA.setHostname() rewrite hostname
 #define OTAWEB                      // enable upload firmware via web
+#define TRXNET                      // P2P telemetry over local LAN (TrxNet lib): device name WX.<NET_ID hex>, NET_ID in EEPROM[1], 0=off
 #define DS18B20                     // external 1wire Temperature sensor
 #define BMP280                      // pressure I2C sensor
 #define HTU21D                      // humidity I2C sensor
@@ -276,7 +280,7 @@ int i = 0;
 51|Bool    1|1
 
 0    - (free, was: listen source)
-1    - (free, was: net ID)
+1    - TrxNet NET_ID (uint8, 0/0xff = disabled)
 2-3  - TempCal Short
 4    - HWREVpcb UChar
 5    - mmInPulse Short
@@ -285,7 +289,7 @@ int i = 0;
 14-17 - SERIAL1_BAUDRATE
 18-21 - SerialServerIPport
 22-31 - APRS Maidenhead locator (10 char, 0xff terminated) - source for the raw APRS coordinate
-32-33 - (free, was: OutputWatchdog tail)
+32-33 - TrxNet UDP port (uint16, 0/0xffff = default 5683)
 34    - (free, was: Bank0 storage)
 35    - (free, was: Bank1 storage)
 36    - (free, was: Bank2 storage)
@@ -412,6 +416,23 @@ String HTTP_req;
 #endif
 boolean MQTT_ENABLE     = 1;          // enable public to MQTT broker
 IPAddress mqtt_server_ip(0, 0, 0, 0);
+
+#if defined(TRXNET)
+  #include <WiFiUdp.h>
+  #include <TrxNet.h>                       // ~/Arduino/libraries/TrxNet - P2P telemetry over local LAN (UDP/CoAP)
+  WiFiUDP trxUdp;                           // works over ETH on ESP32 (shared lwIP stack)
+  TrxNet  trxNet(trxUdp);                   // UDP port 5683 (default), must match other TrxNet devices
+  uint8_t  NET_ID = 0;                      // EEPROM[1]; 0 = TrxNet disabled (do not call begin())
+  uint16_t trxPort = 5683;                  // EEPROM[32-33]; UDP port (default 5683) - segregates multiple TrxNet networks
+  char    trxDeviceName[TRXNET_MAX_DEVICE_NAME];   // assembled as "WX.<NET_ID hex>"
+  bool    trxStarted = false;               // one-shot begin() guard (set once ETH is up)
+  // Greet queue: a newly discovered peer gets a full snapshot (TRX_CON) so it has data
+  // immediately instead of waiting up to 5 min for the next periodic publish.
+  char    trxGreet[TRXNET_MAX_PEERS][TRXNET_MAX_DEVICE_NAME];
+  uint8_t trxGreetCount = 0;
+  void TrxNetOnPeerAdded(const TrxPeer* peer);     // queues the peer name, send deferred to loop()
+  void TrxNetPublish(const char* peerName);        // NULL = broadcast TRX_NON; else greet one peer TRX_CON
+#endif
 // byte BrokerIpArray[2][4]{
 //   // {192,168,1,200},   // MQTT broker remoteqth.com
 //   {54,38,157,134},   // MQTT broker remoteqth.com
@@ -994,6 +1015,15 @@ void setup() {
     WindDirShift = EEPROM.readInt(240);
   }
 
+  // 1 - TrxNet NET_ID (0/0xff = disabled). Device name becomes WX.<NET_ID hex>.
+  // 32-33 - TrxNet UDP port (uint16, 0/0xffff = default 5683).
+  #if defined(TRXNET)
+    NET_ID = EEPROM.read(1);
+    if(NET_ID==0xff) NET_ID=0;   // erased flash -> treat as disabled
+    uint16_t p = EEPROM.readUShort(32);
+    trxPort = (p==0 || p==0xffff) ? 5683 : p;   // unset flash -> default
+  #endif
+
   // 244-367 - windy.com API key (123 chars max, 0xff terminated/unset)
   // 373-404 - windy.com public Station ID (32 chars max, 0xff terminated/unset)
   #if defined(WINDY)
@@ -1280,6 +1310,27 @@ void loop() {
   CLI();
   Telnet();
   Watchdog();
+
+  #if defined(TRXNET)
+  if(NET_ID!=0){
+    if(trxStarted==false && eth_connected==true){   // start once ETH is up and an ID is set
+      snprintf(trxDeviceName, sizeof(trxDeviceName), "WX.%02x", NET_ID);
+      trxNet.setPort(trxPort);             // must be called before begin()
+      trxNet.onPeerAdded(TrxNetOnPeerAdded);
+      trxNet.begin(trxDeviceName);
+      trxStarted=true;
+    }
+    if(trxStarted==true){
+      trxNet.loop();
+      // Drain ONE queued greet per iteration - keeps the CON pending queue bounded to
+      // one peer's snapshot (7 topics) at a time (see TrxNet README "greet new peer").
+      if(trxGreetCount>0){
+        trxGreetCount--;
+        TrxNetPublish(trxGreet[trxGreetCount]);
+      }
+    }
+  }
+  #endif
 
   // check_radio();
 
@@ -1571,6 +1622,11 @@ void Watchdog(){
 
     GetValue(true);   // full read incl. DS18B20 - runs every cycle regardless of MQTT
 
+    #if defined(TRXNET)
+      // Local-LAN telemetry: publish to TrxNet peers regardless of MQTT/internet (island LAN).
+      if(trxStarted==true) TrxNetPublish(NULL);   // broadcast snapshot to all peers (TRX_NON)
+    #endif
+
     if(mqttClient.connected()==true){   // network uploads only when connected (internet up)
       MqttPubValue();
       AprsWxIgate();
@@ -1811,6 +1867,49 @@ void MqttPubValue(){
   MqttPubString("Temperature-Celsius", String(TemperatureCelsius), false);
 
 }
+
+#if defined(TRXNET)
+//-------------------------------------------------------------------------------------------------------
+// Fired from net.loop() when a new peer is discovered. Re-entrancy rule (see TrxNet README): do NOT
+// publish from here - just queue the peer name and let loop() send the snapshot.
+void TrxNetOnPeerAdded(const TrxPeer* peer){
+  if(trxGreetCount >= TRXNET_MAX_PEERS) return;
+  strncpy(trxGreet[trxGreetCount], peer->name, TRXNET_MAX_DEVICE_NAME-1);
+  trxGreet[trxGreetCount][TRXNET_MAX_DEVICE_NAME-1]='\0';
+  trxGreetCount++;
+}
+
+// Publish the 7 weather topics as raw little-endian scaled integers (see TrxNet README "WX" contract).
+//   peerName==NULL : broadcast to all peers, TRX_NON  - periodic 5-min telemetry (latest wins)
+//   peerName!=NULL : unicast snapshot to one freshly joined peer, TRX_CON - reliable greet
+void TrxNetPublish(const char* peerName){
+  TrxMsgType type = peerName ? TRX_CON : TRX_NON;
+  int16_t  temp = (int16_t)lround(TemperatureCelsius     * 100.0);  // °C  x100 (signed)
+  uint16_t hum  = (uint16_t)lround(HumidityRelPercent    * 100.0);  // %   x100
+  uint16_t prs  = (uint16_t)lround(PressureHPA           *  10.0);  // hPa x10
+  uint16_t rain = (uint16_t)lround(RainTodayMM           * 100.0);  // mm  x100 (daily total)
+  uint16_t wdir = (uint16_t)WindDir;                                // deg 0-359
+  uint16_t wavg = (uint16_t)lround(WindSpeedAvgMPS       * 100.0);  // m/s x100
+  uint16_t wmax = (uint16_t)lround(WindSpeedMaxPeriodMPS * 100.0);  // m/s x100
+  if(peerName){
+    trxNet.publishTo(peerName, "/temp",    (uint8_t*)&temp, sizeof(temp), type);
+    trxNet.publishTo(peerName, "/hum",     (uint8_t*)&hum,  sizeof(hum),  type);
+    trxNet.publishTo(peerName, "/press",   (uint8_t*)&prs,  sizeof(prs),  type);
+    trxNet.publishTo(peerName, "/rain",    (uint8_t*)&rain, sizeof(rain), type);
+    trxNet.publishTo(peerName, "/winddir", (uint8_t*)&wdir, sizeof(wdir), type);
+    trxNet.publishTo(peerName, "/windavg", (uint8_t*)&wavg, sizeof(wavg), type);
+    trxNet.publishTo(peerName, "/windmax", (uint8_t*)&wmax, sizeof(wmax), type);
+  }else{
+    trxNet.publish("/temp",    (uint8_t*)&temp, sizeof(temp), type);
+    trxNet.publish("/hum",     (uint8_t*)&hum,  sizeof(hum),  type);
+    trxNet.publish("/press",   (uint8_t*)&prs,  sizeof(prs),  type);
+    trxNet.publish("/rain",    (uint8_t*)&rain, sizeof(rain), type);
+    trxNet.publish("/winddir", (uint8_t*)&wdir, sizeof(wdir), type);
+    trxNet.publish("/windavg", (uint8_t*)&wavg, sizeof(wavg), type);
+    trxNet.publish("/windmax", (uint8_t*)&wmax, sizeof(wmax), type);
+  }
+}
+#endif
 
 
 //----------------------------RADIO--------------------------------------------------------------------
@@ -3897,6 +3996,12 @@ void handleApiConfig(){
   #else
     j += "\"windyKeySet\":false,\"windyId\":\"\",";
   #endif
+  #if defined(TRXNET)
+    j += "\"netId\":" + String(NET_ID) + ",";
+    j += "\"netPort\":" + String(trxPort) + ",";
+  #else
+    j += "\"netId\":0,\"netPort\":5683,";
+  #endif
   // --- System ---
   j += "\"pcb\":" + String(HWREVpcb) + ",";
   j += "\"webAuthSet\":" + String(WebAuthPassword.length()>0 ? "true":"false") + ",";
@@ -3995,6 +4100,17 @@ void handleApiConfigSave(){
   if(webserver.hasArg("windyId")){
     String v=webserver.arg("windyId"); if(v.length()>32) v=v.substring(0,32);
     WindyStationId=v; eepromWriteString(373, 32, v);
+  }
+  #endif
+  #if defined(TRXNET)
+  // TrxNet NET_ID (0 = off). Network field -> reboot so begin() runs with the new name.
+  if(webserver.hasArg("netId")){
+    int v=webserver.arg("netId").toInt();
+    if(v>=0 && v<=255){ if(NET_ID!=v) reboot=true; NET_ID=v; EEPROM.write(1, v); }
+  }
+  if(webserver.hasArg("netPort")){
+    int v=webserver.arg("netPort").toInt();
+    if(v>=1 && v<=65535){ if(trxPort!=v) reboot=true; trxPort=v; EEPROM.writeUShort(32, v); }
   }
   #endif
   // --- System ---

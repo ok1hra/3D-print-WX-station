@@ -80,7 +80,10 @@
       <h3>MQTT broker <span class="hint">(change = restart)</span></h3>
       <div class="row"><label>Broker IP</label><span class="v"><input type="text" id="mqttIp"></span></div>
       <div class="row"><label>Broker port</label><span class="v"><input type="number" id="mqttPort" min="1" max="65535"></span></div>
-      <h3>APRS</h3>
+      <h3><a href="https://github.com/ok1hra/TrxNet" target="_blank" rel="noopener">TrxNet</a> <span class="hint">(change = restart)</span></h3>
+      <div class="row"><label>Network ID<div class="hint">device name WX.&lt;id hex&gt; on the local LAN; 0 = off</div></label><span class="v"><input type="number" id="netId" min="0" max="255"></span></div>
+      <div class="row"><label>UDP port<div class="hint">same on all TrxNet devices; default 5683</div></label><span class="v"><input type="number" id="netPort" min="1" max="65535"></span></div>
+      <h3><a href="https://aprs.fi" target="_blank" rel="noopener">APRS</a></h3>
       <div class="row"><label>APRS enabled<div class="hint">sends as <b>CALLSIGN-ssid</b> from the Station tab</div></label><span class="v"><span class="sw"><input type="checkbox" id="aprsOn"><span class="sl"></span></span></span></div>
       <div class="row"><label>APRS password</label><span class="v"><input type="password" id="aprsPass" autocomplete="new-password"></span></div>
       <div class="row">
@@ -182,7 +185,7 @@
     fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(c){
       setVal('altitude',c.altitude); setVal('call',c.call); setVal('rainMmPulse',c.rainMmPulse);
       setVal('windDirShift',c.windDirShift); setVal('tempCal',c.tempCal);
-      setVal('mqttIp',c.mqttIp); setVal('mqttPort',c.mqttPort);
+      setVal('mqttIp',c.mqttIp); setVal('mqttPort',c.mqttPort); setVal('netId',c.netId); setVal('netPort',c.netPort);
       $('aprsOn').checked=!!c.aprsOn; setVal('windyId',c.windyId);
       // APRS coordinate: input holds the Maidenhead locator, raw is computed in-page + shown below
       loadedRaw = c.aprsCoord || '';
@@ -210,7 +213,7 @@
   function save(){
     var p=new URLSearchParams();
     var fields=['altitude','call','rainMmPulse','windDirShift','tempCal','mqttIp','mqttPort',
-                'windyId','debugLevel'];
+                'netId','netPort','windyId','debugLevel'];
     fields.forEach(function(f){ var v=$(f).value; if(v!=='') p.append(f,v); });
     p.append('aprsOn', $('aprsOn').checked?'1':'0');
     // APRS: send the locator + the in-page computed raw. Empty locator = leave stored value untouched.

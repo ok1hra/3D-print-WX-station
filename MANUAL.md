@@ -11,11 +11,12 @@ Firmware revision string: see `REV` in `wx.ino` (date-based, e.g. `20260626`).
 ## 1. Overview
 
 The station samples wind (direction + speed), rain, temperature, humidity and
-barometric pressure, and distributes the data over four channels:
+barometric pressure, and distributes the data over five channels:
 
 - **MQTT** — telemetry to a broker (default public `54.38.157.134:1883`).
 - **APRS-IS** — weather frame to the APRS network (`czech.aprs2.net:14580`).
 - **windy.com** — PWS upload (HTTPS).
+- **TrxNet** — P2P binary telemetry over the local LAN (UDP, no broker/internet) — see §4.
 - **Web dashboard** — local responsive page plus a setup/diagnostics UI.
 
 Sensors supported (compile-time `#define`, auto-detected at boot): HTU21D
@@ -48,6 +49,7 @@ This makes high-wind capture and real-time web display fully independent.
 | Live-wind SSE stream | 82 | `/events` — Server-Sent Events, CORS-enabled (dashboard needle) |
 | Telnet console | 23 | key-authenticated (key printed on serial at boot) |
 | MQTT | broker-defined | default broker `54.38.157.134:1883` |
+| TrxNet | UDP 5683 (configurable) | P2P discovery + telemetry, local LAN broadcast — see §4 |
 
 mDNS is advertised, so the station is also reachable by hostname `WX-<CALLSIGN>`.
 
@@ -145,6 +147,8 @@ refreshes everything locally.
 | **MQTT ip/mac** | once per (re)connect | broker connect | IP + MAC (retained) |
 | **APRS** | 5 min | measurement cycle, if MQTT connected | one WX frame |
 | **windy.com** | 5 min | measurement cycle, if MQTT connected | PWS upload (only if API key set) |
+| **TrxNet** | 5 min | measurement cycle (ETH only, **not** gated on MQTT) | 7 binary topics to all peers (see below) |
+| **TrxNet greet** | on peer join | new peer discovered | full 7-topic snapshot to that peer (reliable) |
 | **DS18B20 / rain persist / period reset** | 5 min | measurement cycle (ETH only) | runs offline too — independent of MQTT |
 | **Dashboard live wind** | push via SSE `/events`: on-pulse ≤10 Hz + 1 s keep-alive | core-0 `WindTask` | instantaneous speed, direction, rolling 5-min max |
 | **Dashboard `/api/live`** | cache 30 s, browser poll 30 s | `GetValue(false)` (fast sensors, no DS18B20) | temperature, humidity, pressure, rain (+ wind snapshot) |
@@ -174,6 +178,43 @@ refreshes everything locally.
 — acts as the e-ink update trigger), `FreeHeap`.
 
 Subscribed: `CALLSIGN/WX/get` (any payload → immediate re-publish of meteo values).
+
+### TrxNet (local-LAN P2P telemetry)
+
+[TrxNet](https://github.com/ok1hra/TrxNet) is a broker-less peer-to-peer protocol
+(UDP discovery + minimal CoAP) for the remoteQTH device family. The station joins
+the LAN as **`WX.<id>`** and publishes binary telemetry directly to every peer
+(e.g. [TrxNet Monitor](https://github.com/ok1hra/TrxNet/blob/main/MONITOR.md),
+NodeRed) — **no broker and no internet required**, so it works on an isolated LAN.
+
+- **Enable / identity:** set **Network ID** in `/setup` → Network (or the field
+  writes EEPROM byte 1). `0` = disabled (the station does not join). Non-zero `N`
+  → device name `WX.<N hex>` (e.g. `1` → `WX.01`, `255` → `WX.ff`). Change reboots.
+- **UDP port:** default **5683**, configurable in `/setup` → Network (EEPROM 32-33).
+  All TrxNet devices that should see each other must share the same port; different
+  ports segregate independent networks on one LAN. Change reboots.
+- **Cadence:** all 7 topics every 5 min (measurement cycle, `TRX_NON` best-effort,
+  runs even with no MQTT/internet). A newly discovered peer additionally gets an
+  immediate full snapshot (`TRX_CON`, reliable) so it need not wait for the cycle.
+- **Discovery** uses LAN broadcast — all devices must be on the same broadcast
+  domain (no routing across subnets). Wired ETH is unaffected by Wi-Fi AP isolation.
+
+**Topics** — raw **little-endian scaled integers** (all `uint16_t` except `/temp`
+which is `int16_t` for sub-zero):
+
+| Topic | Type | Encoding | Source | Example wire value |
+|---|---|---|---|---|
+| `/temp` | `int16_t` | °C × 100 | `TemperatureCelsius` | 21.35 °C → `2135` |
+| `/hum` | `uint16_t` | % × 100 | `HumidityRelPercent` | 67.50 % → `6750` |
+| `/press` | `uint16_t` | hPa × 10 | `PressureHPA` | 1013.2 hPa → `10132` |
+| `/rain` | `uint16_t` | mm × 100 (daily total) | `RainTodayMM` | 3.80 mm → `380` |
+| `/winddir` | `uint16_t` | degrees 0–359 | `WindDir` | 180° → `180` |
+| `/windavg` | `uint16_t` | m/s × 100 | `WindSpeedAvgMPS` | 4.20 m/s → `420` |
+| `/windmax` | `uint16_t` | m/s × 100 (period max) | `WindSpeedMaxPeriodMPS` | 9.80 m/s → `980` |
+
+Publish-only — the station subscribes to nothing on TrxNet. Compile-time guard
+`#define TRXNET`; library buffer `TRXNET_MAX_PENDING` is raised to 9 in `TrxNet.h`
+to fit the 7-topic greet snapshot.
 
 ---
 
