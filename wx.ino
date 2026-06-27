@@ -320,7 +320,7 @@ int i = 0;
 469     - WebAuthEnabled (1=on, set automatically when password is non-empty)
 
 NOTE: TMEP.cz config is NOT in EEPROM (it is nearly full). It lives in NVS / Preferences
-namespace "tmep" (keys: host, pTemp, pHum, pPress, pDew, pWdir, pWspd, pWgust, pRain) -
+namespace "tmep" (keys: host, stat, pTemp, pHum, pPress, pDew, pWdir, pWspd, pWgust, pRain) -
 separate flash partition, survives OTA.
 
 !! Increment EEPROM_SIZE #define !!
@@ -384,7 +384,8 @@ bool needEEPROMcommit = false;
 // survives OTA. Empty TmepHost = upload disabled; an empty per-sensor param name = that value is
 // not sent. Always compiled (no #define), runtime-gated on TmepHost being set.
 #include <Preferences.h>
-String TmepHost = "";          // writing hostname e.g. "ahoj.tmep.cz" (empty = upload off), NVS key "host"
+String TmepHost = "";          // writing hostname e.g. "ycw33g-grabje.tmep.eu" (empty = upload off), NVS key "host"
+String TmepStatHost = "";      // statistics/dashboard hostname e.g. "temp-hra-8.tmep.eu", NVS key "stat" (only for the public link)
 String tmepParam[8];           // configured TMEP parameter names, parallel to TMEP_FIELDS (empty = skip)
 float  windDirF = 0;           // float mirror of int WindDir so TMEP_FIELDS can hold a uniform float*
 struct TmepField { const char* key; const float* val; uint8_t dec; };
@@ -1077,6 +1078,7 @@ void setup() {
   {
     Preferences prefs; prefs.begin("tmep", true);   // read-only
     TmepHost = prefs.getString("host", "");
+    TmepStatHost = prefs.getString("stat", "");
     for (int i=0; i<8; i++) tmepParam[i] = prefs.getString(TMEP_FIELDS[i].key, "");
     prefs.end();
   }
@@ -3879,7 +3881,7 @@ void handleApiLive(){
   #else
     j += "\"windyId\":\"\",";
   #endif
-  j += "\"tmepHost\":\"" + TmepHost + "\",";   // for the public TMEP link on the dashboard
+  j += "\"tmepStat\":\"" + TmepStatHost + "\",";   // statistics domain -> public TMEP link on the dashboard
   j += "\"aprs\":" + String(AprsON ? "true" : "false");
   j += "}";
   webserver.sendHeader("Cache-Control", "no-store");
@@ -4082,6 +4084,7 @@ void handleApiConfig(){
   #endif
   // --- TMEP.cz (not secret -> sent plain) ---
   j += "\"tmepHost\":\"" + jsonEsc(TmepHost) + "\",";
+  j += "\"tmepStat\":\"" + jsonEsc(TmepStatHost) + "\",";
   for(int i=0;i<8;i++) j += "\"" + String(TMEP_FIELDS[i].key) + "\":\"" + jsonEsc(tmepParam[i]) + "\",";
   #if defined(TRXNET)
     j += "\"netId\":" + String(NET_ID) + ",";
@@ -4197,6 +4200,13 @@ void handleApiConfigSave(){
     if(h.length()>64) h=h.substring(0,64);
     Preferences p; p.begin("tmep", false);
     p.putString("host", h);
+    if(webserver.hasArg("tmepStat")){                          // statistics domain (public link only)
+      String s=webserver.arg("tmepStat"); s.trim();
+      int sc=s.indexOf("://"); if(sc>=0) s=s.substring(sc+3);  // strip scheme
+      int sl=s.indexOf('/');   if(sl>=0) s=s.substring(0,sl);  // strip path
+      if(s.length()>64) s=s.substring(0,64);
+      p.putString("stat", s); TmepStatHost=s;
+    }
     for(int i=0;i<8;i++) if(webserver.hasArg(TMEP_FIELDS[i].key)){
       String v=webserver.arg(TMEP_FIELDS[i].key); if(v.length()>32) v=v.substring(0,32);
       p.putString(TMEP_FIELDS[i].key, v); tmepParam[i]=v;
