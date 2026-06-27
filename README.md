@@ -13,4 +13,5 @@ Firmware and 3d models
   serial/telnet console, configuration, building/flashing, and a reference table
   of how often each value is published to MQTT, APRS, windy.com and the dashboard.
 - [windy.com setup](WINDY.md) — registering and configuring the windy.com PWS upload.
+- [TMEP.cz upload](TMEP.md) — pushing measured values to TMEP.cz (Network tab, per-sensor parameter mapping, NVS config).
 

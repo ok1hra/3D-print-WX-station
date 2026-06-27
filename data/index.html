@@ -98,6 +98,7 @@
   <div class="links">
     <a id="aprsLink" class="hide" target="_blank" rel="noopener">aprs.fi</a>
     <a id="windyLink" class="hide" target="_blank" rel="noopener">windy.com</a>
+    <a id="tmepLink" class="hide" target="_blank" rel="noopener">TMEP</a>
   </div>
 
   <footer>rev <span id="rev">-</span> &middot; wind live &middot; rest 30 s</footer>
@@ -184,6 +185,9 @@
     var wl=document.getElementById('windyLink');
     if(d.windyId){wl.href='https://www.windy.com/station/pws-'+encodeURIComponent(d.windyId);wl.classList.remove('hide');}
     else wl.classList.add('hide');
+    var tl=document.getElementById('tmepLink');
+    if(d.tmepHost){tl.href='https://'+encodeURIComponent(d.tmepHost);tl.classList.remove('hide');}
+    else tl.classList.add('hide');
   }
 
   function poll(){

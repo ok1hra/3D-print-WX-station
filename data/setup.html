@@ -59,7 +59,7 @@
 
   <div class="tabs">
     <button class="tab on" data-t="stanice">Station</button>
-    <button class="tab" data-t="sit">Network</button>
+    <button class="tab" data-t="sit">Publish</button>
     <button class="tab" data-t="system">System</button>
     <button class="tab" data-t="stav">Status</button>
     <button class="tab" data-t="debug">Debug</button>
@@ -96,6 +96,17 @@
       <h3><a href="https://stations.windy.com/keys" target="_blank" rel="noopener">windy.com</a></h3>
       <div class="row"><label>API key</label><span class="v"><input type="password" id="windyKey" autocomplete="new-password"></span></div>
       <div class="row"><label>Station ID <div class="hint">without pws- prefix, e.g. f052c6e5</div></label><span class="v"><input type="text" id="windyId" maxlength="32"></span></div>
+      <h3><a href="https://wiki.tmep.cz" target="_blank" rel="noopener">TMEP.cz</a></h3>
+      <div class="row"><label>Writing host<div class="hint">e.g. ahoj.tmep.cz — empty = upload off</div></label><span class="v"><input type="text" id="tmepHost" maxlength="64" placeholder="ahoj.tmep.cz"></span></div>
+      <div class="row"><label style="flex:1">Map each sensor to a TMEP parameter name<div class="hint">empty = that value is not sent; units are raw (°C, %, hPa, °, m/s, mm)</div></label></div>
+      <div class="row"><label>Temperature [°C]</label><span class="v"><input type="text" id="pTemp" maxlength="32" placeholder="temp"></span></div>
+      <div class="row"><label>Humidity [%]</label><span class="v"><input type="text" id="pHum" maxlength="32" placeholder="humV"></span></div>
+      <div class="row"><label>Pressure (sea level) [hPa]</label><span class="v"><input type="text" id="pPress" maxlength="32" placeholder="pressV"></span></div>
+      <div class="row"><label>Dew point [°C]</label><span class="v"><input type="text" id="pDew" maxlength="32"></span></div>
+      <div class="row"><label>Wind direction [°]</label><span class="v"><input type="text" id="pWdir" maxlength="32"></span></div>
+      <div class="row"><label>Wind speed [m/s]</label><span class="v"><input type="text" id="pWspd" maxlength="32"></span></div>
+      <div class="row"><label>Wind gust [m/s]</label><span class="v"><input type="text" id="pWgust" maxlength="32"></span></div>
+      <div class="row"><label>Rain today [mm]</label><span class="v"><input type="text" id="pRain" maxlength="32"></span></div>
     </section>
 
     <!-- SYSTEM -->
@@ -187,6 +198,9 @@
       setVal('windDirShift',c.windDirShift); setVal('tempCal',c.tempCal);
       setVal('mqttIp',c.mqttIp); setVal('mqttPort',c.mqttPort); setVal('netId',c.netId); setVal('netPort',c.netPort);
       $('aprsOn').checked=!!c.aprsOn; setVal('windyId',c.windyId);
+      // TMEP.cz host + per-sensor parameter names
+      setVal('tmepHost',c.tmepHost);
+      ['pTemp','pHum','pPress','pDew','pWdir','pWspd','pWgust','pRain'].forEach(function(k){setVal(k,c[k]);});
       // APRS coordinate: input holds the Maidenhead locator, raw is computed in-page + shown below
       loadedRaw = c.aprsCoord || '';
       setVal('aprsLoc', c.aprsLoc);
@@ -219,6 +233,10 @@
     // APRS: send the locator + the in-page computed raw. Empty locator = leave stored value untouched.
     var loc=$('aprsLoc').value.toUpperCase();
     if(loc!==''){ var raw=loc2aprs(loc); if(raw){ p.append('aprsLoc',loc); p.append('aprsCoord',raw); } }
+    // TMEP: always send host + all param names (incl. empty) so clearing a field actually persists.
+    // An empty tmepHost still triggers the server's TMEP block, letting the user disable the upload.
+    p.append('tmepHost',$('tmepHost').value);
+    ['pTemp','pHum','pPress','pDew','pWdir','pWspd','pWgust','pRain'].forEach(function(k){p.append(k,$(k).value);});
     // secrets only when user typed something
     if($('aprsPass').value) p.append('aprsPass',$('aprsPass').value);
     if($('windyKey').value) p.append('windyKey',$('windyKey').value);

@@ -54,6 +54,7 @@ mosquitto_sub -h 54.38.157.134 -p 1883 -t "OK1HRA-8/WX/FreeHeap"
 HARDWARE ESP32-POE
 
 Changelog:
+20260627 - TMEP.cz upload (Network tab, per-sensor parameter mapping, NVS config) + TMEP link on main web page
 20260626 - windy.com Station ID ('I' menu cmd, EEPROM 373-404) + WINDY link on main web page next to APRS
 20260626 - finish windy.com upload (API key in EEPROM 244-367 + 'K' menu cmd, fix units, local TLS client + setInsecure to save heap)
 20260626 - AI bugfix
@@ -318,6 +319,10 @@ int i = 0;
 405-468 - 64 char web Basic-auth password (0xff/0x00 terminated, empty = auth OFF)
 469     - WebAuthEnabled (1=on, set automatically when password is non-empty)
 
+NOTE: TMEP.cz config is NOT in EEPROM (it is nearly full). It lives in NVS / Preferences
+namespace "tmep" (keys: host, pTemp, pHum, pPress, pDew, pWdir, pWspd, pWgust, pRain) -
+separate flash partition, survives OTA.
+
 !! Increment EEPROM_SIZE #define !!
 
 */
@@ -372,6 +377,28 @@ bool needEEPROMcommit = false;
   "-----END CERTIFICATE-----\n";
   #endif
 #endif
+
+// --- TMEP.cz upload ----------------------------------------------------------------------------
+// Pushes the measured values to a TMEP.cz writing host via a single plain HTTP GET (sibling of the
+// Windy/APRS uploads). Config lives in NVS namespace "tmep" (NOT EEPROM - that's full), so it
+// survives OTA. Empty TmepHost = upload disabled; an empty per-sensor param name = that value is
+// not sent. Always compiled (no #define), runtime-gated on TmepHost being set.
+#include <Preferences.h>
+String TmepHost = "";          // writing hostname e.g. "ahoj.tmep.cz" (empty = upload off), NVS key "host"
+String tmepParam[8];           // configured TMEP parameter names, parallel to TMEP_FIELDS (empty = skip)
+float  windDirF = 0;           // float mirror of int WindDir so TMEP_FIELDS can hold a uniform float*
+struct TmepField { const char* key; const float* val; uint8_t dec; };
+const TmepField TMEP_FIELDS[8] = {
+  {"pTemp",  &TemperatureCelsius,     1},
+  {"pHum",   &HumidityRelPercent,     0},
+  {"pPress", &PressureHPA,            1},
+  {"pDew",   &DewPointCelsius,        1},
+  {"pWdir",  &windDirF,               0},
+  {"pWspd",  &WindSpeedAvgMPS,        1},
+  {"pWgust", &WindSpeedMaxPeriodMPS,  1},
+  {"pRain",  &RainTodayMM,            2},
+};
+// -----------------------------------------------------------------------------------------------
 
 #include <WebServer.h>
 WebServer webserver(HTTP_SERVER_PORT);   // :80 - new web UI: root dashboard, /setup, /api/*, static SPIFFS files
@@ -665,6 +692,7 @@ const unsigned long LiveCacheInterval = 30000;  // ms between slow-sensor cache 
 void MqttPubValue();
 void check_radio();
 void GetHttpsWindy();
+void TmepUpload();
 double Babinet(double Pz, double T);
 int MpsToMs(int MPS);
 float PulseToMetterBySecond(long PULSE);
@@ -1044,6 +1072,14 @@ void setup() {
       WindyStationId += char(b);
     }
   #endif
+
+  // TMEP.cz config lives in NVS (namespace "tmep"), not EEPROM. Empty host = upload disabled.
+  {
+    Preferences prefs; prefs.begin("tmep", true);   // read-only
+    TmepHost = prefs.getString("host", "");
+    for (int i=0; i<8; i++) tmepParam[i] = prefs.getString(TMEP_FIELDS[i].key, "");
+    prefs.end();
+  }
 
   // 405-468 web Basic-auth password, 469 enabled flag
   #if defined(OTAWEB)
@@ -1631,6 +1667,7 @@ void Watchdog(){
       MqttPubValue();
       AprsWxIgate();
       GetHttpsWindy();
+      TmepUpload();
       MqttPubString("FreeHeap", String(ESP.getFreeHeap()), false);   // monitor heap trend (leak/fragmentation)
     }
 
@@ -2024,6 +2061,52 @@ void GetHttpsWindy(){
     Prn(3, 1, "[windy] stop");
   }
   #endif
+}
+//-------------------------------------------------------------------------------------------------------
+
+// Push measured values to a TMEP.cz writing host via one plain HTTP GET:
+//   http://<host>/?<param>=<value>&...   (values raw, like the Windy/APRS uploads - no validity gate)
+// Only sensors with a non-empty configured param name are sent; empty host = upload disabled.
+void TmepUpload(){
+  if(TmepHost.length()==0) return;          // no host configured -> upload off
+  windDirF = WindDir;                        // refresh float mirror for the TMEP_FIELDS table
+
+  String q;
+  for(int i=0; i<8; i++){
+    if(tmepParam[i].length()==0) continue;   // sensor not mapped -> skip
+    if(q.length()) q += "&";
+    q += tmepParam[i] + "=" + String(*TMEP_FIELDS[i].val, (int)TMEP_FIELDS[i].dec);
+  }
+  if(q.length()==0) return;                   // nothing mapped -> nothing to send
+
+  WiFiClient client;
+  client.setTimeout(8);                       // 8s, avoid blocking the loop on a stalled host
+  Prn(3, 1, "\n[tmep] connecting to "+TmepHost+" ...");
+  if(!client.connect(TmepHost.c_str(), 80)){
+    Prn(3, 1, "[tmep] connection failed!");
+    client.stop();
+    return;
+  }
+
+  String req = "GET /?"+q+" HTTP/1.1";
+  Prn(3, 1, "[tmep] "+req);
+  client.println(req);
+  client.println("Host: "+TmepHost);
+  client.println("Connection: close");
+  client.println();
+
+  while(client.connected()){                  // skip response headers
+    String line = client.readStringUntil('\n');
+    if(line == "\r"){ Prn(3, 1, "[tmep] headers received"); break; }
+  }
+  Prn(3, 0, "[tmep RX] ");
+  while(client.available()){                   // log body for debugging
+    char c = client.read();
+    Serial.write(c);
+  }
+
+  client.stop();
+  Prn(3, 1, "[tmep] stop");
 }
 //-------------------------------------------------------------------------------------------------------
 
@@ -3796,6 +3879,7 @@ void handleApiLive(){
   #else
     j += "\"windyId\":\"\",";
   #endif
+  j += "\"tmepHost\":\"" + TmepHost + "\",";   // for the public TMEP link on the dashboard
   j += "\"aprs\":" + String(AprsON ? "true" : "false");
   j += "}";
   webserver.sendHeader("Cache-Control", "no-store");
@@ -3996,6 +4080,9 @@ void handleApiConfig(){
   #else
     j += "\"windyKeySet\":false,\"windyId\":\"\",";
   #endif
+  // --- TMEP.cz (not secret -> sent plain) ---
+  j += "\"tmepHost\":\"" + jsonEsc(TmepHost) + "\",";
+  for(int i=0;i<8;i++) j += "\"" + String(TMEP_FIELDS[i].key) + "\":\"" + jsonEsc(tmepParam[i]) + "\",";
   #if defined(TRXNET)
     j += "\"netId\":" + String(NET_ID) + ",";
     j += "\"netPort\":" + String(trxPort) + ",";
@@ -4102,6 +4189,21 @@ void handleApiConfigSave(){
     WindyStationId=v; eepromWriteString(373, 32, v);
   }
   #endif
+  // --- TMEP.cz (stored in NVS, no reboot needed - TmepUpload() reads the live globals) ---
+  if(webserver.hasArg("tmepHost")){
+    String h=webserver.arg("tmepHost"); h.trim();
+    int sc=h.indexOf("://"); if(sc>=0) h=h.substring(sc+3);   // strip scheme
+    int sl=h.indexOf('/');   if(sl>=0) h=h.substring(0,sl);   // strip path
+    if(h.length()>64) h=h.substring(0,64);
+    Preferences p; p.begin("tmep", false);
+    p.putString("host", h);
+    for(int i=0;i<8;i++) if(webserver.hasArg(TMEP_FIELDS[i].key)){
+      String v=webserver.arg(TMEP_FIELDS[i].key); if(v.length()>32) v=v.substring(0,32);
+      p.putString(TMEP_FIELDS[i].key, v); tmepParam[i]=v;
+    }
+    p.end();
+    TmepHost=h;
+  }
   #if defined(TRXNET)
   // TrxNet NET_ID (0 = off). Network field -> reboot so begin() runs with the new name.
   if(webserver.hasArg("netId")){
