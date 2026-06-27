@@ -45,7 +45,7 @@
   .links a{color:var(--accent);text-decoration:none;margin:0 .5rem}
   .stale{opacity:.45}
   footer{color:var(--mut);font-size:.75rem;margin-top:auto;padding-top:1rem}
-  .hide{display:none}
+  .hide{display:none!important}   /* !important so it beats the higher-specificity .wdirc .arrow rule */
 </style>
 </head>
 <body>
@@ -159,7 +159,7 @@
     document.getElementById('arrow').style.transform='rotate('+(d.windDir||0)+'deg)';
     // wind direction only meaningful when there is wind: hide just the azimuth value + arrow when
     // calm (the "Wind dir" tile and its label stay in place)
-    var calm = !(Number(d.lastMs)>0);
+    var calm = !(Number(d.lastMs)>=0.5);   // below 0.5 m/s treated as calm (noisy anemometer flickers near 0)
     document.getElementById('wdirv').classList.toggle('hide', calm);
     document.getElementById('arrow').classList.toggle('hide', calm);
   }
