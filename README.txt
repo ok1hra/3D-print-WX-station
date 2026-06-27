@@ -1,7 +1,7 @@
 WX station recovery package
 ==========================
 
-Firmware REV: 20260626
+Firmware REV: 20260627
 Flash mode:   dio
 Flash freq:   40m
 Flash size:   4MB
@@ -15,9 +15,9 @@ Files:
 - firmware.bin
 - spiffs.bin
 - recovery-merged.bin
-- wx-20260626-esp32-poe-firmware.bin
-- wx-20260626-esp32-poe-spiffs.bin
-- wx-20260626-esp32-poe-recovery-merged.bin
+- wx-20260627-esp32-poe-firmware.bin
+- wx-20260627-esp32-poe-spiffs.bin
+- wx-20260627-esp32-poe-recovery-merged.bin
 - manifest.json
 - index.html
 
