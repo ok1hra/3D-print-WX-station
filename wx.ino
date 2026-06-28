@@ -132,7 +132,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20260627";
+const char* REV = "20260628";
 #define HWREVsw 8                   // software PCB version [7-8]
 // #define AJAX                        // enable ajax web server
 #define WINDY                      // upload to windy.com PWS (set station API key with 'K' menu command). TLS client is local + setInsecure() to save heap
