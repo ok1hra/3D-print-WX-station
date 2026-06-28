@@ -1,6 +1,6 @@
 {
   "name": "WX Station Recovery",
-  "version": "20260628",
+  "version": "20260629",
   "new_install_prompt_erase": true,
   "builds": [
     {
