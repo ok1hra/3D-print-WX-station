@@ -132,7 +132,7 @@ Použití knihovny DallasTemperature ve verzi 3.9.0 v adresáři: /home/dan/Ardu
 
 */
 //-------------------------------------------------------------------------------------------------------
-const char* REV = "20260628";
+const char* REV = "20260629";
 #define HWREVsw 8                   // software PCB version [7-8]
 // #define AJAX                        // enable ajax web server
 #define WINDY                      // upload to windy.com PWS (set station API key with 'K' menu command). TLS client is local + setInsecure() to save heap
@@ -281,7 +281,7 @@ int i = 0;
 51|Bool    1|1
 
 0    - (free, was: listen source)
-1    - TrxNet NET_ID (uint8, 0/0xff = disabled)
+1    - TrxNet NET_ID (uint8, device id only; enable is byte 35)
 2-3  - TempCal Short
 4    - HWREVpcb UChar
 5    - mmInPulse Short
@@ -291,9 +291,9 @@ int i = 0;
 18-21 - SerialServerIPport
 22-31 - APRS Maidenhead locator (10 char, 0xff terminated) - source for the raw APRS coordinate
 32-33 - TrxNet UDP port (uint16, 0/0xffff = default 5683)
-34    - (free, was: Bank0 storage)
-35    - (free, was: Bank1 storage)
-36    - (free, was: Bank2 storage)
+34    - MQTT enable (1=on, else off; master switch, was: Bank0 storage)
+35    - TrxNet enable (1=on, else off; master switch, was: Bank1 storage)
+36    - windy.com enable (1=on, else off; master switch, was: Bank2 storage)
 37-40 - Authorised telnet client IP
 41-140 - Authorised telnet client key
 141-160 - YOUR_CALL
@@ -320,8 +320,8 @@ int i = 0;
 469     - WebAuthEnabled (1=on, set automatically when password is non-empty)
 
 NOTE: TMEP.cz config is NOT in EEPROM (it is nearly full). It lives in NVS / Preferences
-namespace "tmep" (keys: host, stat, pTemp, pHum, pPress, pDew, pWdir, pWspd, pWgust, pRain) -
-separate flash partition, survives OTA.
+namespace "tmep" (keys: en, host, stat, pTemp, pHum, pPress, pDew, pWdir, pWspd, pWgust, pRain) -
+separate flash partition, survives OTA. "en" (bool) is the TMEP master switch.
 
 !! Increment EEPROM_SIZE #define !!
 
@@ -333,7 +333,8 @@ bool needEEPROMcommit = false;
   // #include <HTTPClient.h>
   #include <WiFiClientSecure.h>
   const char*  windyServer = "stations.windy.com";  // Server URL
-  String WindyApiKey = "";                           // windy.com PWS station API key, stored in EEPROM 244-367 (empty = upload disabled)
+  bool   WindyEnable = false;                        // windy.com master switch (EEPROM byte 36, 1=on); default off
+  String WindyApiKey = "";                           // windy.com PWS station API key, stored in EEPROM 244-367
   String WindyStationId = "";                         // windy.com public Station ID, e.g. "pws-f06ea43a" (EEPROM 373-404), only for the web-page link
   // The WiFiClientSecure (TLS) object is created locally inside GetHttpsWindy() so its
   // ~30-40 kB of handshake buffers are released after every upload instead of being held
@@ -381,10 +382,11 @@ bool needEEPROMcommit = false;
 // --- TMEP.cz upload ----------------------------------------------------------------------------
 // Pushes the measured values to a TMEP.cz writing host via a single plain HTTP GET (sibling of the
 // Windy/APRS uploads). Config lives in NVS namespace "tmep" (NOT EEPROM - that's full), so it
-// survives OTA. Empty TmepHost = upload disabled; an empty per-sensor param name = that value is
-// not sent. Always compiled (no #define), runtime-gated on TmepHost being set.
+// survives OTA. An empty per-sensor param name = that value is not sent. Always compiled (no
+// #define), runtime-gated on TmepEnable (master switch, NVS key "en").
 #include <Preferences.h>
-String TmepHost = "";          // writing hostname e.g. "ycw33g-grabje.tmep.eu" (empty = upload off), NVS key "host"
+bool   TmepEnable = false;     // TMEP master switch (NVS key "en"); default off
+String TmepHost = "";          // writing hostname e.g. "ycw33g-grabje.tmep.eu", NVS key "host"
 String TmepStatHost = "";      // statistics/dashboard hostname e.g. "temp-hra-8.tmep.eu", NVS key "stat" (only for the public link)
 String tmepParam[8];           // configured TMEP parameter names, parallel to TMEP_FIELDS (empty = skip)
 float  windDirF = 0;           // float mirror of int WindDir so TMEP_FIELDS can hold a uniform float*
@@ -442,7 +444,7 @@ String HTTP_req;
    // PubSubClient mqttClient(server, 1883, callback, ethClient);
    long lastMqttReconnectAttempt = 0;
 #endif
-boolean MQTT_ENABLE     = 1;          // enable public to MQTT broker
+boolean MQTT_ENABLE     = 0;          // MQTT master switch (EEPROM byte 34, 1=on); loaded at boot, default off
 IPAddress mqtt_server_ip(0, 0, 0, 0);
 
 #if defined(TRXNET)
@@ -450,7 +452,8 @@ IPAddress mqtt_server_ip(0, 0, 0, 0);
   #include <TrxNet.h>                       // ~/Arduino/libraries/TrxNet - P2P telemetry over local LAN (UDP/CoAP)
   WiFiUDP trxUdp;                           // works over ETH on ESP32 (shared lwIP stack)
   TrxNet  trxNet(trxUdp);                   // UDP port 5683 (default), must match other TrxNet devices
-  uint8_t  NET_ID = 0;                      // EEPROM[1]; 0 = TrxNet disabled (do not call begin())
+  uint8_t  NET_ID = 0;                      // EEPROM[1]; device id only (name WX.<NET_ID hex>) - enable is TrxNetEnable
+  bool     TrxNetEnable = false;            // TrxNet master switch (EEPROM byte 35, 1=on); default off
   uint16_t trxPort = 5683;                  // EEPROM[32-33]; UDP port (default 5683) - segregates multiple TrxNet networks
   char    trxDeviceName[TRXNET_MAX_DEVICE_NAME];   // assembled as "WX.<NET_ID hex>"
   bool    trxStarted = false;               // one-shot begin() guard (set once ETH is up)
@@ -1044,18 +1047,22 @@ void setup() {
     WindDirShift = EEPROM.readInt(240);
   }
 
-  // 1 - TrxNet NET_ID (0/0xff = disabled). Device name becomes WX.<NET_ID hex>.
+  // 1 - TrxNet NET_ID (device id; name WX.<NET_ID hex>). Enable is byte 35 (TrxNetEnable).
   // 32-33 - TrxNet UDP port (uint16, 0/0xffff = default 5683).
   #if defined(TRXNET)
     NET_ID = EEPROM.read(1);
-    if(NET_ID==0xff) NET_ID=0;   // erased flash -> treat as disabled
+    if(NET_ID==0xff) NET_ID=0;   // erased flash -> default id 0 (name WX.00)
+    TrxNetEnable = (EEPROM.read(35)==1);   // master switch (erased 0xff -> off)
     uint16_t p = EEPROM.readUShort(32);
     trxPort = (p==0 || p==0xffff) ? 5683 : p;   // unset flash -> default
   #endif
+  // master switches for the publish services (EEPROM bytes 34/35/36, 1=on; erased 0xff -> off)
+  MQTT_ENABLE = (EEPROM.read(34)==1);
 
   // 244-367 - windy.com API key (123 chars max, 0xff terminated/unset)
   // 373-404 - windy.com public Station ID (32 chars max, 0xff terminated/unset)
   #if defined(WINDY)
+    WindyEnable = (EEPROM.read(36)==1);   // master switch (erased 0xff -> off)
     WindyApiKey="";
     for (int i=244; i<367; i++){
       byte b = EEPROM.read(i);
@@ -1074,9 +1081,10 @@ void setup() {
     }
   #endif
 
-  // TMEP.cz config lives in NVS (namespace "tmep"), not EEPROM. Empty host = upload disabled.
+  // TMEP.cz config lives in NVS (namespace "tmep"), not EEPROM. "en" is the master switch.
   {
     Preferences prefs; prefs.begin("tmep", true);   // read-only
+    TmepEnable = prefs.getBool("en", false);
     TmepHost = prefs.getString("host", "");
     TmepStatHost = prefs.getString("stat", "");
     for (int i=0; i<8; i++) tmepParam[i] = prefs.getString(TMEP_FIELDS[i].key, "");
@@ -1350,8 +1358,8 @@ void loop() {
   Watchdog();
 
   #if defined(TRXNET)
-  if(NET_ID!=0){
-    if(trxStarted==false && eth_connected==true){   // start once ETH is up and an ID is set
+  if(TrxNetEnable){
+    if(trxStarted==false && eth_connected==true){   // start once ETH is up and TrxNet enabled
       snprintf(trxDeviceName, sizeof(trxDeviceName), "WX.%02x", NET_ID);
       trxNet.setPort(trxPort);             // must be called before begin()
       trxNet.onPeerAdded(TrxNetOnPeerAdded);
@@ -1662,16 +1670,18 @@ void Watchdog(){
 
     #if defined(TRXNET)
       // Local-LAN telemetry: publish to TrxNet peers regardless of MQTT/internet (island LAN).
-      if(trxStarted==true) TrxNetPublish(NULL);   // broadcast snapshot to all peers (TRX_NON)
+      if(TrxNetEnable && trxStarted==true) TrxNetPublish(NULL);   // broadcast snapshot to all peers (TRX_NON)
     #endif
 
-    if(mqttClient.connected()==true){   // network uploads only when connected (internet up)
+    // Each publish service is gated only by its own master switch (decoupled from MQTT). The upload
+    // functions self-guard their own connection (timeouts), so a down service can't stall the others.
+    if(MQTT_ENABLE && mqttClient.connected()==true){
       MqttPubValue();
-      AprsWxIgate();
-      GetHttpsWindy();
-      TmepUpload();
       MqttPubString("FreeHeap", String(ESP.getFreeHeap()), false);   // monitor heap trend (leak/fragmentation)
     }
+    if(AprsON)      AprsWxIgate();
+    if(WindyEnable) GetHttpsWindy();
+    if(TmepEnable)  TmepUpload();
 
     RainCountStore();   // persist today's rain counter (only writes EEPROM when it changed)
 
@@ -3876,12 +3886,19 @@ void handleApiLive(){
   #else
     j += "\"hasPress\":false,";
   #endif
+  // dashboard service links follow the master switches: only advertise a link when the service is on
   #if defined(WINDY)
-    j += "\"windyId\":\"" + WindyStationId + "\",";
+    j += "\"windyId\":\"" + String(WindyEnable ? WindyStationId : String("")) + "\",";
   #else
     j += "\"windyId\":\"\",";
   #endif
-  j += "\"tmepStat\":\"" + TmepStatHost + "\",";   // statistics domain -> public TMEP link on the dashboard
+  j += "\"tmepStat\":\"" + String(TmepEnable ? TmepStatHost : String("")) + "\",";   // statistics domain -> public TMEP link on the dashboard
+  j += "\"mqtt\":" + String(mqttClient.connected() ? "true" : "false") + ",";   // live broker link -> dashboard shows MQTT wall only when connected
+  #if defined(TRXNET)
+    j += "\"net\":" + String(TrxNetEnable ? "true" : "false") + ",";   // dashboard TrxNet link (monitor page) when enabled
+  #else
+    j += "\"net\":false,";
+  #endif
   j += "\"aprs\":" + String(AprsON ? "true" : "false");
   j += "}";
   webserver.sendHeader("Cache-Control", "no-store");
@@ -4072,25 +4089,29 @@ void handleApiConfig(){
   // --- Sit ---
   j += "\"mqttIp\":\"" + String(mqtt_server_ip[0]) + "." + String(mqtt_server_ip[1]) + "." + String(mqtt_server_ip[2]) + "." + String(mqtt_server_ip[3]) + "\",";
   j += "\"mqttPort\":" + String(MQTT_PORT) + ",";
+  j += "\"mqttOn\":" + String(MQTT_ENABLE ? "true":"false") + ",";
   j += "\"aprsOn\":" + String(AprsON ? "true":"false") + ",";
   j += "\"aprsPassSet\":" + String(AprsPassword.length()>0 ? "true":"false") + ",";
   j += "\"aprsCoord\":\"" + jsonEsc(AprsCoordinates) + "\",";
   j += "\"aprsLoc\":\"" + jsonEsc(AprsLocator) + "\",";
   #if defined(WINDY)
+    j += "\"windyOn\":" + String(WindyEnable ? "true":"false") + ",";
     j += "\"windyKeySet\":" + String(WindyApiKey.length()>0 ? "true":"false") + ",";
     j += "\"windyId\":\"" + jsonEsc(WindyStationId) + "\",";
   #else
-    j += "\"windyKeySet\":false,\"windyId\":\"\",";
+    j += "\"windyOn\":false,\"windyKeySet\":false,\"windyId\":\"\",";
   #endif
   // --- TMEP.cz (not secret -> sent plain) ---
+  j += "\"tmepOn\":" + String(TmepEnable ? "true":"false") + ",";
   j += "\"tmepHost\":\"" + jsonEsc(TmepHost) + "\",";
   j += "\"tmepStat\":\"" + jsonEsc(TmepStatHost) + "\",";
   for(int i=0;i<8;i++) j += "\"" + String(TMEP_FIELDS[i].key) + "\":\"" + jsonEsc(tmepParam[i]) + "\",";
   #if defined(TRXNET)
+    j += "\"netOn\":" + String(TrxNetEnable ? "true":"false") + ",";
     j += "\"netId\":" + String(NET_ID) + ",";
     j += "\"netPort\":" + String(trxPort) + ",";
   #else
-    j += "\"netId\":0,\"netPort\":5683,";
+    j += "\"netOn\":false,\"netId\":0,\"netPort\":5683,";
   #endif
   // --- System ---
   j += "\"pcb\":" + String(HWREVpcb) + ",";
@@ -4166,6 +4187,10 @@ void handleApiConfigSave(){
     int v=webserver.arg("mqttPort").toInt();
     if(v>=1 && v<=65535){ if(MQTT_PORT!=v) reboot=true; EEPROM.writeInt(165, v); }
   }
+  if(webserver.hasArg("mqttOn")){   // master switch -> reboot so the connect/init state matches
+    bool v=(webserver.arg("mqttOn")=="1"||webserver.arg("mqttOn")=="true");
+    if(MQTT_ENABLE!=v) reboot=true; MQTT_ENABLE=v; EEPROM.write(34, v?1:0);
+  }
   if(webserver.hasArg("aprsOn")){
     bool v=(webserver.arg("aprsOn")=="1"||webserver.arg("aprsOn")=="true");
     AprsON=v; EEPROM.write(199, v?1:0);
@@ -4183,6 +4208,10 @@ void handleApiConfigSave(){
     AprsLocator=v; eepromWriteString(22, 10, v);
   }
   #if defined(WINDY)
+  if(webserver.hasArg("windyOn")){   // master switch (takes effect live, next upload cycle)
+    bool v=(webserver.arg("windyOn")=="1"||webserver.arg("windyOn")=="true");
+    WindyEnable=v; EEPROM.write(36, v?1:0);
+  }
   if(webserver.hasArg("windyKey") && webserver.arg("windyKey").length()>0){
     String v=webserver.arg("windyKey"); if(v.length()>123) v=v.substring(0,123);
     WindyApiKey=v; eepromWriteString(244, 123, v);
@@ -4214,8 +4243,16 @@ void handleApiConfigSave(){
     p.end();
     TmepHost=h;
   }
+  if(webserver.hasArg("tmepOn")){   // master switch (takes effect live, next upload cycle)
+    bool v=(webserver.arg("tmepOn")=="1"||webserver.arg("tmepOn")=="true");
+    TmepEnable=v; Preferences p; p.begin("tmep", false); p.putBool("en", v); p.end();
+  }
   #if defined(TRXNET)
-  // TrxNet NET_ID (0 = off). Network field -> reboot so begin() runs with the new name.
+  // TrxNet NET_ID is just the device id now; the master switch is netOn. Both -> reboot so begin() reruns.
+  if(webserver.hasArg("netOn")){
+    bool v=(webserver.arg("netOn")=="1"||webserver.arg("netOn")=="true");
+    if(TrxNetEnable!=v) reboot=true; TrxNetEnable=v; EEPROM.write(35, v?1:0);
+  }
   if(webserver.hasArg("netId")){
     int v=webserver.arg("netId").toInt();
     if(v>=0 && v<=255){ if(NET_ID!=v) reboot=true; NET_ID=v; EEPROM.write(1, v); }
@@ -4289,6 +4326,21 @@ void EthEvent(WiFiEvent_t event)
       Serial.println("Mbps");
       eth_connected = true;
 
+      // Load YOUR_CALL from EEPROM (141-160) once ETH is up; default falls back to the MAC tail.
+      // Must run regardless of MQTT - the callsign feeds the dashboard, APRS, MQTT topics, hostname.
+      // (Previously this lived inside the MQTT-enabled branch, so disabling MQTT left the call empty.)
+      YOUR_CALL="";
+      if(EEPROM.read(141)==0xff){
+        YOUR_CALL=MACString;
+        YOUR_CALL.remove(0, 12);
+      }else{
+        for (int i=141; i<161; i++){
+          if(EEPROM.read(i)!=0xff){
+            YOUR_CALL=YOUR_CALL+char(EEPROM.read(i));
+          }
+        }
+      }
+
       #if defined(MQTT)
         if (MQTT_ENABLE == true && MQTT_LOGIN == true){
           // if (mqttClient.connect("esp32gwClient", MQTT_USER, MQTT_PASS)){
@@ -4300,18 +4352,6 @@ void EthEvent(WiFiEvent_t event)
           mqttClient.setServer(mqtt_server_ip, MQTT_PORT);
           mqttClient.setCallback(MqttRx);
           lastMqttReconnectAttempt = 0;
-
-          // EEPROM YOUR_CALL
-          if(EEPROM.read(141)==0xff){
-            YOUR_CALL=MACString;
-            YOUR_CALL.remove(0, 12);
-          }else{
-            for (int i=141; i<161; i++){
-              if(EEPROM.read(i)!=0xff){
-                YOUR_CALL=YOUR_CALL+char(EEPROM.read(i));
-              }
-            }
-          }
 
           char charbuf[50];
            // // memcpy( charbuf, ETH.macAddress(), 6);

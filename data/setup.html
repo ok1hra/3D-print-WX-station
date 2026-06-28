@@ -34,6 +34,19 @@
   .sw input:checked+.sl:after{content:"ON";right:auto;left:9px}
   h3{color:var(--mut);font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;margin:1.3rem 0 .3rem}
   h3 a{color:var(--accent);text-decoration:none}
+  /* collapsible publish blocks: header carries a derived ON/OFF badge; body hidden until .open */
+  .block{border:1px solid var(--line);border-radius:9px;margin:.55rem 0;background:var(--card)}
+  .bhead{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.65rem .85rem;cursor:pointer;user-select:none;border-radius:9px;background:#2c3137}
+  .bhead:hover{background:#3f454b}
+  .btitle{font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--fg)}
+  .btitle a{color:var(--accent);text-decoration:none}
+  .btitle .hint{display:inline;text-transform:none;letter-spacing:0;margin:0}
+  .badge{flex:0 0 auto;font-size:.68rem;font-weight:700;letter-spacing:.06em;padding:.15rem .55rem;border-radius:11px;color:#fff;background:var(--err)}
+  .badge.on{background:var(--ok)}
+  .bbody{display:none;padding:0 .85rem}
+  .block.open>.bbody{display:block}
+  .block.open>.bhead{border-bottom:1px solid var(--line);border-radius:9px 9px 0 0}
+  .bbody .row:last-child{border-bottom:none}
   .hint{color:var(--mut);font-size:.78rem;margin:.2rem 0 0}
   .raw{color:var(--mut);font-size:.85em}
   .raw.bad{color:var(--err)}
@@ -68,8 +81,8 @@
   <main>
     <!-- STANICE -->
     <section class="panel on" id="stanice">
+      <div class="row"><label>Name / Callsign (CALLSIGN-ssid)</label><span class="v"><input type="text" id="call" maxlength="20"></span></div>
       <div class="row"><label>Altitude [m]<div class="hint">for sea-level pressure conversion</div></label><span class="v"><input type="number" id="altitude"></span></div>
-      <div class="row"><label>Callsign / name (CALLSIGN-ssid)</label><span class="v"><input type="text" id="call" maxlength="20"></span></div>
       <div class="row"><label>Rain mm per pulse<div class="hint">default 0.13</div></label><span class="v"><input type="number" step="0.01" id="rainMmPulse"></span></div>
       <div class="row"><label>Wind direction offset [°]</label><span class="v"><input type="number" id="windDirShift" min="0" max="359"></span></div>
       <div class="row"><label>Temperature calibration [°C]</label><span class="v"><input type="number" step="0.01" id="tempCal"></span></div>
@@ -77,37 +90,61 @@
 
     <!-- SIT -->
     <section class="panel" id="sit">
-      <h3>MQTT broker <span class="hint">(change = restart)</span></h3>
-      <div class="row"><label>Broker IP</label><span class="v"><input type="text" id="mqttIp"></span></div>
-      <div class="row"><label>Broker port</label><span class="v"><input type="number" id="mqttPort" min="1" max="65535"></span></div>
-      <h3><a href="https://github.com/ok1hra/TrxNet" target="_blank" rel="noopener">TrxNet</a> <span class="hint">(change = restart)</span></h3>
-      <div class="row"><label>Network ID<div class="hint">device name WX.&lt;id hex&gt; on the local LAN; 0 = off</div></label><span class="v"><input type="number" id="netId" min="0" max="255"></span></div>
-      <div class="row"><label>UDP port<div class="hint">same on all TrxNet devices; default 5683</div></label><span class="v"><input type="number" id="netPort" min="1" max="65535"></span></div>
-      <h3><a href="https://aprs.fi" target="_blank" rel="noopener">APRS</a></h3>
-      <div class="row"><label>APRS enabled<div class="hint">sends as <b>CALLSIGN-ssid</b> from the Station tab</div></label><span class="v"><span class="sw"><input type="checkbox" id="aprsOn"><span class="sl"></span></span></span></div>
-      <div class="row"><label>APRS password</label><span class="v"><input type="password" id="aprsPass" autocomplete="new-password"></span></div>
-      <div class="row">
-        <label>APRS coordinates
-          <div class="hint"><a href="https://www.egloff.eu/qralocator/" target="_blank" rel="noopener">Locator &#8599;</a> — 6/8/10 char, e.g. JN81DU55IX</div>
-          <div class="raw" id="aprsRaw">&mdash;</div>
-        </label>
-        <span class="v"><input type="text" id="aprsLoc" maxlength="10" placeholder="locator" autocapitalize="characters" autocomplete="off"></span>
+      <div class="block" id="blk-mqtt">
+        <div class="bhead"><span class="btitle">MQTT broker <span class="hint">(change = restart)</span></span><span class="badge" id="bg-mqtt">OFF</span></div>
+        <div class="bbody">
+          <div class="row"><label>Enabled<div class="hint">publish measured values to the MQTT broker</div></label><span class="v"><input type="checkbox" id="mqttOn"></span></div>
+          <div class="row"><label>Broker IP</label><span class="v"><input type="text" id="mqttIp"></span></div>
+          <div class="row"><label>Broker port</label><span class="v"><input type="number" id="mqttPort" min="1" max="65535"></span></div>
+        </div>
       </div>
-      <h3><a href="https://stations.windy.com/keys" target="_blank" rel="noopener">windy.com</a></h3>
-      <div class="row"><label>API key</label><span class="v"><input type="password" id="windyKey" autocomplete="new-password"></span></div>
-      <div class="row"><label>Station ID <div class="hint">without pws- prefix, e.g. f052c6e5</div></label><span class="v"><input type="text" id="windyId" maxlength="32"></span></div>
-      <h3><a href="https://wiki.tmep.cz" target="_blank" rel="noopener">TMEP.cz</a></h3>
-      <div class="row"><label>Writing host<div class="hint">"Doména pro zasílání hodnot" from TMEP, e.g. ycw33g-grabje.tmep.eu — empty = upload off</div></label><span class="v"><input type="text" id="tmepHost" maxlength="64" placeholder="ycw33g-grabje.tmep.eu"></span></div>
-      <div class="row"><label>Statistics domain<div class="hint">"Doména se statistikami" — public dashboard, used only for the TMEP link, e.g. temp-hra-8.tmep.eu</div></label><span class="v"><input type="text" id="tmepStat" maxlength="64" placeholder="temp-hra-8.tmep.eu"></span></div>
-      <div class="row"><label style="flex:1">Map each sensor to a TMEP parameter name<div class="hint">empty = that value is not sent; units are raw (°C, %, hPa, °, m/s, mm)</div></label></div>
-      <div class="row"><label>Temperature [°C]</label><span class="v"><input type="text" id="pTemp" maxlength="32" placeholder="temp"></span></div>
-      <div class="row"><label>Humidity [%]</label><span class="v"><input type="text" id="pHum" maxlength="32" placeholder="humV"></span></div>
-      <div class="row"><label>Pressure (sea level) [hPa]</label><span class="v"><input type="text" id="pPress" maxlength="32" placeholder="pressV"></span></div>
-      <div class="row"><label>Dew point [°C]</label><span class="v"><input type="text" id="pDew" maxlength="32"></span></div>
-      <div class="row"><label>Wind direction [°]</label><span class="v"><input type="text" id="pWdir" maxlength="32"></span></div>
-      <div class="row"><label>Wind speed [m/s]</label><span class="v"><input type="text" id="pWspd" maxlength="32"></span></div>
-      <div class="row"><label>Wind gust [m/s]</label><span class="v"><input type="text" id="pWgust" maxlength="32"></span></div>
-      <div class="row"><label>Rain today [mm]</label><span class="v"><input type="text" id="pRain" maxlength="32"></span></div>
+      <div class="block" id="blk-trxnet">
+        <div class="bhead"><span class="btitle"><a href="https://github.com/ok1hra/TrxNet" target="_blank" rel="noopener">TrxNet</a> <span class="hint">(change = restart)</span></span><span class="badge" id="bg-trxnet">OFF</span></div>
+        <div class="bbody">
+          <div class="row"><label>Enabled<div class="hint">publish telemetry to TrxNet peers on the local LAN</div></label><span class="v"><input type="checkbox" id="netOn"></span></div>
+          <div class="row"><label>Network ID<div class="hint">device name WX.&lt;id hex&gt; on the local LAN</div></label><span class="v"><input type="number" id="netId" min="0" max="255"></span></div>
+          <div class="row"><label>UDP port<div class="hint">same on all TrxNet devices; default 5683</div></label><span class="v"><input type="number" id="netPort" min="1" max="65535"></span></div>
+        </div>
+      </div>
+      <div class="block" id="blk-aprs">
+        <div class="bhead"><span class="btitle"><a href="https://aprs.fi" target="_blank" rel="noopener">APRS</a></span><span class="badge" id="bg-aprs">OFF</span></div>
+        <div class="bbody">
+          <div class="row"><label>APRS enabled<div class="hint">sends as <b>CALLSIGN-ssid</b> from the Station tab</div></label><span class="v"><input type="checkbox" id="aprsOn"></span></div>
+          <div class="row"><label>APRS password</label><span class="v"><input type="password" id="aprsPass" autocomplete="new-password"></span></div>
+          <div class="row">
+            <label>APRS coordinates
+              <div class="hint"><a href="https://www.egloff.eu/qralocator/" target="_blank" rel="noopener">Locator &#8599;</a> — 6/8/10 char, e.g. JN81DU55IX</div>
+              <div class="raw" id="aprsRaw">&mdash;</div>
+            </label>
+            <span class="v"><input type="text" id="aprsLoc" maxlength="10" placeholder="locator" autocapitalize="characters" autocomplete="off"></span>
+          </div>
+        </div>
+      </div>
+      <div class="block" id="blk-windy">
+        <div class="bhead"><span class="btitle"><a href="https://stations.windy.com/keys" target="_blank" rel="noopener">windy.com</a></span><span class="badge" id="bg-windy">OFF</span></div>
+        <div class="bbody">
+          <div class="row"><label>Enabled<div class="hint">upload to your windy.com PWS station</div></label><span class="v"><input type="checkbox" id="windyOn"></span></div>
+          <div class="row"><label>API key</label><span class="v"><input type="password" id="windyKey" autocomplete="new-password"></span></div>
+          <div class="row"><label>Station ID <div class="hint">without pws- prefix, e.g. f052c6e5</div></label><span class="v"><input type="text" id="windyId" maxlength="32"></span></div>
+        </div>
+      </div>
+      <div class="block" id="blk-tmep">
+        <div class="bhead"><span class="btitle"><a href="https://wiki.tmep.cz" target="_blank" rel="noopener">TMEP.cz</a></span><span class="badge" id="bg-tmep">OFF</span></div>
+        <div class="bbody">
+          <div class="row"><label>Enabled<div class="hint">upload measured values to TMEP.cz</div></label><span class="v"><input type="checkbox" id="tmepOn"></span></div>
+          <div class="row"><label>Writing host<div class="hint">"Doména pro zasílání hodnot" from TMEP, e.g. ycw33g-grabje.tmep.eu</div></label><span class="v"><input type="text" id="tmepHost" maxlength="64" placeholder="ycw33g-grabje.tmep.eu"></span></div>
+          <div class="row"><label>Statistics domain<div class="hint">"Doména se statistikami" — public dashboard, used only for the TMEP link, e.g. temp-hra-8.tmep.eu</div></label><span class="v"><input type="text" id="tmepStat" maxlength="64" placeholder="temp-hra-8.tmep.eu"></span></div>
+          <div class="row"><label style="flex:1">Map each sensor to a TMEP parameter name<div class="hint">empty = that value is not sent; units are raw (°C, %, hPa, °, m/s, mm)</div></label></div>
+          <div class="row"><label>Temperature [°C]</label><span class="v"><input type="text" id="pTemp" maxlength="32" placeholder="temp"></span></div>
+          <div class="row"><label>Humidity [%]</label><span class="v"><input type="text" id="pHum" maxlength="32" placeholder="humV"></span></div>
+          <div class="row"><label>Pressure (sea level) [hPa]</label><span class="v"><input type="text" id="pPress" maxlength="32" placeholder="pressV"></span></div>
+          <div class="row"><label>Dew point [°C]</label><span class="v"><input type="text" id="pDew" maxlength="32"></span></div>
+          <div class="row"><label>Wind direction [°]</label><span class="v"><input type="text" id="pWdir" maxlength="32"></span></div>
+          <div class="row"><label>Wind speed [m/s]</label><span class="v"><input type="text" id="pWspd" maxlength="32"></span></div>
+          <div class="row"><label>Wind gust [m/s]</label><span class="v"><input type="text" id="pWgust" maxlength="32"></span></div>
+          <div class="row"><label>Rain today [mm]</label><span class="v"><input type="text" id="pRain" maxlength="32"></span></div>
+        </div>
+      </div>
     </section>
 
     <!-- SYSTEM -->
@@ -187,6 +224,14 @@
     };
   });
 
+  // collapsible publish blocks: click a header to expand/collapse (all collapsed by default).
+  // Clicks on a link inside the title still navigate instead of toggling.
+  document.querySelectorAll('.bhead').forEach(function(h){
+    h.onclick=function(e){ if(e.target.closest('a')) return; h.parentNode.classList.toggle('open'); };
+  });
+  // derived ON/OFF badge in each block header
+  function setBadge(id,on){var e=$(id); if(e){e.textContent=on?'ON':'OFF'; e.classList.toggle('on',!!on);}}
+
   function setVal(id,v){var e=$(id); if(e) e.value=(v==null?'':v);}
   function fmtUptime(s){
     if(s<60)return s+' s'; if(s<3600)return Math.floor(s/60)+' min';
@@ -202,6 +247,12 @@
       // TMEP.cz host + per-sensor parameter names
       setVal('tmepHost',c.tmepHost); setVal('tmepStat',c.tmepStat);
       ['pTemp','pHum','pPress','pDew','pWdir','pWspd','pWgust','pRain'].forEach(function(k){setVal(k,c[k]);});
+      // enable checkboxes are the single source of truth for each service
+      $('mqttOn').checked=!!c.mqttOn; $('netOn').checked=!!c.netOn;
+      $('windyOn').checked=!!c.windyOn; $('tmepOn').checked=!!c.tmepOn;
+      // block badges mirror the enable checkbox
+      setBadge('bg-mqtt', c.mqttOn); setBadge('bg-trxnet', c.netOn); setBadge('bg-aprs', c.aprsOn);
+      setBadge('bg-windy', c.windyOn); setBadge('bg-tmep', c.tmepOn);
       // APRS coordinate: input holds the Maidenhead locator, raw is computed in-page + shown below
       loadedRaw = c.aprsCoord || '';
       setVal('aprsLoc', c.aprsLoc);
@@ -230,12 +281,13 @@
     var fields=['altitude','call','rainMmPulse','windDirShift','tempCal','mqttIp','mqttPort',
                 'netId','netPort','windyId','debugLevel'];
     fields.forEach(function(f){ var v=$(f).value; if(v!=='') p.append(f,v); });
-    p.append('aprsOn', $('aprsOn').checked?'1':'0');
+    // enable master switches (single source of truth per service)
+    ['mqttOn','netOn','aprsOn','windyOn','tmepOn'].forEach(function(k){p.append(k,$(k).checked?'1':'0');});
     // APRS: send the locator + the in-page computed raw. Empty locator = leave stored value untouched.
     var loc=$('aprsLoc').value.toUpperCase();
     if(loc!==''){ var raw=loc2aprs(loc); if(raw){ p.append('aprsLoc',loc); p.append('aprsCoord',raw); } }
-    // TMEP: always send host + all param names (incl. empty) so clearing a field actually persists.
-    // An empty tmepHost still triggers the server's TMEP block, letting the user disable the upload.
+    // TMEP: always send host + all param names (incl. empty) so clearing a field actually persists
+    // (the upload on/off is governed by the tmepOn switch above, not by an empty host).
     p.append('tmepHost',$('tmepHost').value); p.append('tmepStat',$('tmepStat').value);
     ['pTemp','pHum','pPress','pDew','pWdir','pWspd','pWgust','pRain'].forEach(function(k){p.append(k,$(k).value);});
     // secrets only when user typed something
@@ -295,6 +347,9 @@
     $('saveBtn').disabled = !aprsValid;
   }
   $('aprsLoc').oninput=onLoc;
+  // keep each header badge in sync with its (unsaved) enable checkbox
+  [['mqttOn','bg-mqtt'],['netOn','bg-trxnet'],['aprsOn','bg-aprs'],['windyOn','bg-windy'],['tmepOn','bg-tmep']]
+    .forEach(function(p){ $(p[0]).onchange=function(){ setBadge(p[1], $(p[0]).checked); }; });
 
   // debug-level dropdown is a pending selection until Save; mark it dirty on change so the 2 s
   // /api/debug poll (which reflects the device's actual level) doesn't revert it to OFF

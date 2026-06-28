@@ -27,6 +27,8 @@
   .gband{fill:none;stroke-width:12;stroke-linecap:round}   /* coloured speed zones, drawn over track */
   .gneedle{stroke:var(--accent);stroke-width:4;stroke-linecap:round;transform-origin:110px 110px;
            transition:transform .25s linear, stroke .25s linear}
+  .gmax{stroke:var(--fg);stroke-width:3;stroke-linecap:butt;transform-origin:110px 110px;
+        transition:transform .6s ease;opacity:.85}   /* 5-min max marker on the speed arc */
   .ghub{fill:var(--accent);transition:fill .25s linear}
   .gtick{fill:var(--mut);font-size:11px}
   .gval{font-size:2rem;font-weight:400;margin-top:-1.5rem;font-variant-numeric:tabular-nums}
@@ -35,16 +37,18 @@
   .card.wdirc{grid-column:3;grid-row:2}     /* wind direction: 3rd column, below */
   .wdirc .arrow{font-size:4.2rem;line-height:1;margin-top:.35rem;transition:transform .6s ease;display:inline-block}
   .wdirc .wd{color:var(--fg);font-size:1rem;font-variant-numeric:tabular-nums;text-transform:none}
-  .btns{display:flex;gap:.8rem;margin:1.6rem 0 .5rem;flex-wrap:wrap;justify-content:center}
+  .btns{display:flex;gap:.8rem;margin:auto 0 .5rem;flex-wrap:wrap;justify-content:center}  /* margin-top:auto pins to page bottom */
   .btn{padding:.75rem 1.8rem;border-radius:10px;background:var(--accent);color:#fff;text-decoration:none;
        font-weight:600;font-size:1rem;border:none;cursor:pointer}
   .btn.sec{background:#4b5258}
   #otaBtn{background:#4b5258}
   #otaBtn:hover,.btn.sec:hover{background:var(--accent)}
-  .links{margin-top:.6rem;font-size:.85rem}
+  #otaBtn.upd{background:var(--accent)}   /* newer firmware published -> stays blue, not just on hover */
+  .fwnew{color:var(--accent);font-size:.8rem;font-weight:600;margin:.1rem 0 .2rem;text-align:center}
+  .links{margin-top:.6rem;font-size:.85rem;min-height:1.2em}
   .links a{color:var(--accent);text-decoration:none;margin:0 .5rem}
   .stale{opacity:.45}
-  footer{color:var(--mut);font-size:.75rem;margin-top:auto;padding-top:1rem}
+  footer{color:var(--mut);font-size:.75rem;padding-top:1rem}
   .hide{display:none!important}   /* !important so it beats the higher-specificity .wdirc .arrow rule */
 </style>
 </head>
@@ -83,6 +87,7 @@
     <div class="gauge">
       <svg viewBox="0 0 220 140" class="gsvg" aria-label="wind speed">
         <path class="gtrack" d="M20 110 A 90 90 0 0 1 200 110"/>
+        <line id="gmax" class="gmax" x1="110" y1="9" x2="110" y2="31"/>
         <line id="needle" class="gneedle" x1="110" y1="110" x2="110" y2="28"/>
         <circle cx="110" cy="110" r="6" class="ghub"/>
       </svg>
@@ -90,16 +95,19 @@
     </div>
   </div>
 
-  <div class="btns">
-    <a class="btn" id="otaBtn" href="#">OTA</a>
-    <a class="btn sec" href="/setup">SETUP</a>
-    <a class="btn sec" href="/wall">MQTT wall</a>
-  </div>
   <div class="links">
     <a id="aprsLink" class="hide" target="_blank" rel="noopener">aprs.fi</a>
     <a id="windyLink" class="hide" target="_blank" rel="noopener">windy.com</a>
-    <a id="tmepLink" class="hide" target="_blank" rel="noopener">TMEP</a>
+    <a id="tmepLink" class="hide" target="_blank" rel="noopener">TMEP.cz</a>
+    <a id="trxLink" class="hide" href="https://github.com/ok1hra/TrxNet/tree/main/monitor" target="_blank" rel="noopener">TrxNet</a>
+    <a id="wallLink" class="hide" href="/wall">MQTT wall</a>
   </div>
+
+  <div class="btns">
+    <a class="btn" id="otaBtn" href="#">OTA</a>
+    <a class="btn sec" href="/setup">SETUP</a>
+  </div>
+  <div id="fwNew" class="fwnew hide"></div>
 
   <footer>rev <span id="rev">-</span> &middot; wind live &middot; rest 30 s</footer>
 
@@ -139,6 +147,16 @@
       t.textContent=val; svg.appendChild(t);
     }
   })();
+  // Circular-safe exponential smoothing of wind direction: average the unit vector (sin,cos), not the
+  // raw degrees, so 350 deg and 10 deg blend correctly across the 0/360 wrap. Both the arrow and the
+  // numeric azimuth read this smoothed angle, so they always agree. a=0.85 -> ~5-10 s time constant.
+  var dirSx=null, dirCy=null, DIR_A=0.85;
+  function smoothDir(deg){
+    var r=deg*Math.PI/180, s=Math.sin(r), c=Math.cos(r);
+    if(dirSx===null){dirSx=s;dirCy=c;}
+    else{dirSx=DIR_A*dirSx+(1-DIR_A)*s; dirCy=DIR_A*dirCy+(1-DIR_A)*c;}
+    return (Math.atan2(dirSx,dirCy)*180/Math.PI+360)%360;
+  }
   // wind dir + speed. Fed by the SSE push (lastMs/windMaxMs/windDir) and by the REST polls (which add
   // periodMaxUtc). Numeric fields are always present; periodMaxUtc only from REST, so guard it.
   function applyWind(d){
@@ -151,15 +169,23 @@
     nd.style.stroke = col;
     document.querySelector('.ghub').style.fill = col;
     setText('wmax', fmt(d.windMaxMs,1));  // rolling max over the trailing 5 min (decoupled from MQTT)
+    // marker on the speed arc at the 5-min max position (same angle mapping as the needle)
+    var vmax = Number(d.windMaxMs); vmax = isNaN(vmax)?0:Math.max(0,Math.min(GMAX,vmax));
+    document.getElementById('gmax').style.transform='rotate('+(-90 + vmax/GMAX*180)+'deg)';
     if(d.periodMaxUtc !== undefined){     // only the REST polls carry the timestamp
       var t = d.periodMaxUtc || '', sp = t.indexOf(' ');
       setText('wmaxt', (sp>=0) ? t.slice(sp+1) : '');
     }
-    setText('wdir', d.windDir);
-    document.getElementById('arrow').style.transform='rotate('+(d.windDir||0)+'deg)';
     // wind direction only meaningful when there is wind: hide just the azimuth value + arrow when
-    // calm (the "Wind dir" tile and its label stay in place)
+    // calm (the "Wind dir" tile and its label stay in place). Only feed the smoother while there is
+    // real wind, so calm-period anemometer noise doesn't pollute the average.
     var calm = !(Number(d.lastMs)>=0.5);   // below 0.5 m/s treated as calm (noisy anemometer flickers near 0)
+    var dir = Number(d.windDir);
+    if(!calm && !isNaN(dir)){
+      var sd = smoothDir(dir);
+      setText('wdir', Math.round(sd));
+      document.getElementById('arrow').style.transform='rotate('+sd+'deg)';
+    }
     document.getElementById('wdirv').classList.toggle('hide', calm);
     document.getElementById('arrow').classList.toggle('hide', calm);
   }
@@ -174,6 +200,7 @@
     setText('press', fmt(d.pressHPa,1));
     setText('rain', fmt(d.rainMM,2));
     setText('rev', d.rev || '-');
+    curRev = d.rev || ''; checkFirmware();    // light the OTA button if a newer release is published
     applyWind(d);
     document.getElementById('cardHum').classList.toggle('hide', !d.hasHum);
     document.getElementById('cardPress').classList.toggle('hide', !d.hasPress);
@@ -188,6 +215,31 @@
     var tl=document.getElementById('tmepLink');
     if(d.tmepStat){tl.href='https://'+encodeURIComponent(d.tmepStat);tl.classList.remove('hide');}
     else tl.classList.add('hide');
+    // TrxNet link (to the monitor page) only while TrxNet publishing is enabled
+    document.getElementById('trxLink').classList.toggle('hide', !d.net);
+    // MQTT wall link only while the broker is actually connected (disabled/offline -> hidden)
+    document.getElementById('wallLink').classList.toggle('hide', !d.mqtt);
+  }
+
+  // OTA button stays blue (not just on hover) when a newer firmware is published. Same source and
+  // version compare as the OTA page: fetch the GitHub-Pages manifest and compare its "version" digits
+  // to the running REV. Runs once; a transient fetch failure clears the flag so a later poll retries.
+  var curRev='', fwChecked=false;
+  function checkFirmware(){
+    if(fwChecked || !curRev) return;
+    fwChecked=true;
+    fetch('https://ok1hra.github.io/3D-print-WX-station/manifest.json?ts='+Date.now(),{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(m){
+        var cur=String(curRev).replace(/[^0-9]/g,''), lat=String(m.version||'').replace(/[^0-9]/g,'');
+        if(cur && lat && Number(lat)>Number(cur)){
+          document.getElementById('otaBtn').classList.add('upd');   // OTA button stays blue
+          var fn=document.getElementById('fwNew');
+          fn.textContent='New firmware available: '+(m.version||lat);
+          fn.classList.remove('hide');
+        }
+      })
+      .catch(function(){fwChecked=false;});
   }
 
   function poll(){
